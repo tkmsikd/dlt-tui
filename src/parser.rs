@@ -98,11 +98,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     };
 
     // The len field includes the Standard Header itself (4 bytes minimum)
-    let expected_remaining = if len as usize >= 4 {
-        len as usize - 4
-    } else {
-        0
-    };
+    let expected_remaining = (len as usize).saturating_sub(4);
     if input.len() < expected_remaining {
         return Err(ParseError::Incomplete(expected_remaining - input.len()));
     }
@@ -112,7 +108,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     let mut msg_apid = None;
     let mut msg_ctid = None;
     let mut msg_log_level = None;
-    let expected_payload_len = if len >= 4 { len - 4 } else { 0 };
+    let expected_payload_len = len.saturating_sub(4);
     let mut actual_payload_len = expected_payload_len as usize;
 
     // 3. Extended Header

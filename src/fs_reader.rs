@@ -22,15 +22,14 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
             // we should probably force a header read.
             let mut decoder = flate2::read::GzDecoder::new(file);
             let mut buf = [0; 0];
-            if let Err(e) = decoder.read(&mut buf) {
-                return Err(e);
-            }
+            #[allow(clippy::unused_io_amount)]
+            decoder.read(&mut buf)?;
             Ok(Box::new(decoder))
         }
         "zip" => {
             let mut archive = zip::ZipArchive::new(file)?;
             // for MVP, we just take the first file and slurp it.
-            if archive.len() == 0 {
+            if archive.is_empty() {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
                     "Zip file string is empty",

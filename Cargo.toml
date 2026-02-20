@@ -7,7 +7,7 @@ edition = "2024"
 crossterm = "0.29.0"
 flate2 = "1.1.9"
 nom = "8.0.0"
-ratatui = "0.30.0"
+ratatui = { version = "0.30.0", features = ["all-widgets"] }
 zip = "8.1.0"
 
 [dev-dependencies]

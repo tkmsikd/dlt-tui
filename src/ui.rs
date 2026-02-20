@@ -13,20 +13,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
         .split(f.area());
 
+    f.render_widget(ratatui::widgets::Clear, f.area());
+
     match app.screen {
         AppScreen::Explorer => {
             let items: Vec<ListItem> = app
                 .explorer_items
                 .iter()
-                .enumerate()
-                .map(|(i, entry)| {
-                    let prefix = if i == app.explorer_selected_index {
-                        ">> "
-                    } else {
-                        "   "
-                    };
+                .map(|entry| {
                     let symbol = if entry.is_dir { "[DIR] " } else { "[FILE]" };
-                    let content = format!("{}{}{}", prefix, symbol, entry.name);
+                    let content = format!("{} {}", symbol, entry.name);
                     ListItem::new(content)
                 })
                 .collect();
@@ -35,27 +31,95 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .block(
                     Block::default()
                         .title("File Explorer")
-                        .borders(Borders::ALL),
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan)),
                 )
-                .highlight_style(Style::default().fg(Color::Yellow));
+                .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow))
+                .highlight_symbol(">> ");
 
-            f.render_widget(list, chunks[0]);
+            let mut state = ratatui::widgets::ListState::default();
+            state.select(Some(app.explorer_selected_index));
+
+            f.render_stateful_widget(list, chunks[0], &mut state);
         }
         AppScreen::LogViewer => {
-            let items: Vec<ListItem> = app
-                .logs
+            let header_cells = ["Level", "Time", "ECU", "APP", "CTX", "Payload"]
                 .iter()
-                .map(|log| ListItem::new(format!("{} | {}", log.ecu_id, log.payload_text)))
-                .collect();
+                .map(|h| ratatui::widgets::Cell::from(*h).style(Style::default().fg(Color::Cyan)));
 
-            let list =
-                List::new(items).block(Block::default().title("Log Viewer").borders(Borders::ALL));
-            f.render_widget(list, chunks[0]);
+            let header = ratatui::widgets::Row::new(header_cells)
+                .style(Style::default().bg(Color::DarkGray))
+                .height(1)
+                .bottom_margin(1);
+
+            let rows = app.logs.iter().map(|log| {
+                let (level_str, level_color) = match &log.log_level {
+                    Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
+                    Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
+                    Some(crate::parser::LogLevel::Warn) => ("WRN", Color::Yellow),
+                    Some(crate::parser::LogLevel::Info) => ("INF", Color::Green),
+                    Some(crate::parser::LogLevel::Debug) => ("DBG", Color::Blue),
+                    Some(crate::parser::LogLevel::Verbose) => ("VRB", Color::Gray),
+                    Some(crate::parser::LogLevel::Unknown(_)) => ("UNK", Color::DarkGray),
+                    None => ("---", Color::Reset),
+                };
+
+                let cells = vec![
+                    ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
+                    ratatui::widgets::Cell::from(log.timestamp_us.to_string()),
+                    ratatui::widgets::Cell::from(log.ecu_id.clone()),
+                    ratatui::widgets::Cell::from(
+                        log.apid.clone().unwrap_or_else(|| "-".to_string()),
+                    ),
+                    ratatui::widgets::Cell::from(
+                        log.ctid.clone().unwrap_or_else(|| "-".to_string()),
+                    ),
+                    ratatui::widgets::Cell::from(log.payload_text.clone()),
+                ];
+                ratatui::widgets::Row::new(cells).height(1)
+            });
+
+            // Table widths: Level(5), Time(15), ECU(5), APP(5), CTX(5), Payload(Min(20))
+            let widths = [
+                Constraint::Length(5),
+                Constraint::Length(15),
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Min(20),
+            ];
+
+            let table = ratatui::widgets::Table::new(rows, widths)
+                .header(header)
+                .block(
+                    Block::default()
+                        .title("Log Viewer")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Green)),
+                )
+                .row_highlight_style(Style::default().bg(Color::Indexed(8)).fg(Color::White))
+                .highlight_symbol(">> ");
+
+            // Note: ratatui::widgets::Table uses TableState instead of ListState
+            let mut state = ratatui::widgets::TableState::default();
+            state.select(Some(app.logs_selected_index));
+            f.render_stateful_widget(table, chunks[0], &mut state);
         }
     }
 
-    let status = Paragraph::new(format!("Current mode: {:?}", app.screen))
-        .block(Block::default().title("Status").borders(Borders::ALL));
+    let status_str = match app.screen {
+        AppScreen::Explorer => format!(
+            "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
+            app.explorer_items.len()
+        ),
+        AppScreen::LogViewer => format!(
+            "Mode: Viewer | Logs: {} | (j/k) Scroll | (Esc) List | (q) Quit",
+            app.logs.len()
+        ),
+    };
+
+    let status =
+        Paragraph::new(status_str).block(Block::default().title("Status").borders(Borders::ALL));
     f.render_widget(status, chunks[1]);
 }
 

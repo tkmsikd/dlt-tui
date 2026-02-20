@@ -1,7 +1,6 @@
 use crate::explorer::{self, FileEntry};
 use crate::fs_reader;
 use crate::parser::{self, DltMessage};
-use ratatui::widgets::ListState;
 use std::path::Path;
 
 #[derive(Debug, PartialEq)]
@@ -17,6 +16,12 @@ pub struct App {
     pub logs: Vec<DltMessage>,
     pub logs_selected_index: usize,
     pub should_quit: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -79,6 +84,28 @@ impl App {
 
         self.screen = AppScreen::LogViewer;
         Ok(())
+    }
+
+    pub fn on_home(&mut self) {
+        match self.screen {
+            AppScreen::Explorer => self.explorer_selected_index = 0,
+            AppScreen::LogViewer => self.logs_selected_index = 0,
+        }
+    }
+
+    pub fn on_end(&mut self) {
+        match self.screen {
+            AppScreen::Explorer => {
+                if !self.explorer_items.is_empty() {
+                    self.explorer_selected_index = self.explorer_items.len() - 1;
+                }
+            }
+            AppScreen::LogViewer => {
+                if !self.logs.is_empty() {
+                    self.logs_selected_index = self.logs.len() - 1;
+                }
+            }
+        }
     }
 
     pub fn on_tick(&mut self) {
@@ -233,6 +260,12 @@ mod tests {
         app.on_down();
         app.on_down();
         // Capped at 4
+        assert_eq!(app.logs_selected_index, 4);
+        // test home and end
+        app.on_home();
+        assert_eq!(app.logs_selected_index, 0);
+
+        app.on_end();
         assert_eq!(app.logs_selected_index, 4);
     }
 }

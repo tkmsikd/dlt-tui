@@ -69,6 +69,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                 KeyCode::Char('q') => app.on_key_q(),
                 KeyCode::Char('j') | KeyCode::Down => app.on_down(),
                 KeyCode::Char('k') | KeyCode::Up => app.on_up(),
+                KeyCode::Char('g') | KeyCode::Home => app.on_home(),
+                KeyCode::Char('G') | KeyCode::End => app.on_end(),
                 KeyCode::Enter => {
                     // MVP logic for Enter key (navigate or open)
                     if app.screen == AppScreen::Explorer {
