@@ -1,5 +1,8 @@
-use crate::explorer::FileEntry;
-use crate::parser::DltMessage;
+use crate::explorer::{self, FileEntry};
+use crate::fs_reader;
+use crate::parser::{self, DltMessage};
+use ratatui::widgets::ListState;
+use std::path::Path;
 
 #[derive(Debug, PartialEq)]
 pub enum AppScreen {
@@ -26,6 +29,56 @@ impl App {
             logs_selected_index: 0,
             should_quit: false,
         }
+    }
+
+    pub fn load_directory(&mut self, path: &Path) -> std::io::Result<()> {
+        let mut entries = explorer::list_directory(path)?;
+
+        // Add ".." parent directory option if it has a parent
+        if let Some(parent) = path.parent() {
+            entries.insert(
+                0,
+                FileEntry {
+                    name: "..".to_string(),
+                    is_dir: true,
+                    path: parent.to_path_buf(),
+                },
+            );
+        }
+
+        // sort by is_dir (directories first), then by name
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+
+        self.explorer_items = entries;
+        self.explorer_selected_index = 0;
+        Ok(())
+    }
+
+    pub fn load_file(&mut self, path: &Path) -> std::io::Result<()> {
+        self.logs.clear();
+        self.logs_selected_index = 0;
+
+        let mut stream = fs_reader::open_dlt_stream(path)?;
+        let mut buffer = Vec::new();
+        std::io::Read::read_to_end(&mut stream, &mut buffer)?;
+
+        // Basic MVP Parse loop
+        let mut input = buffer.as_slice();
+        while !input.is_empty() {
+            match parser::parse_dlt_message(input) {
+                Ok((remaining, msg)) => {
+                    self.logs.push(msg);
+                    input = remaining;
+                }
+                Err(_) => {
+                    // For MVP: On error, just break out (or try to find next magic number ideally)
+                    break;
+                }
+            }
+        }
+
+        self.screen = AppScreen::LogViewer;
+        Ok(())
     }
 
     pub fn on_tick(&mut self) {
