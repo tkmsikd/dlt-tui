@@ -28,9 +28,9 @@ pub enum ParseError {
 }
 
 use nom::{
+    IResult,
     bytes::complete::{tag, take},
     number::complete::le_u16,
-    IResult,
 };
 
 fn parse_storage_header(input: &[u8]) -> IResult<&[u8], (&[u8], String)> {
@@ -38,11 +38,11 @@ fn parse_storage_header(input: &[u8]) -> IResult<&[u8], (&[u8], String)> {
     let (input, _timestamp_sec) = take(4usize)(input)?;
     let (input, _timestamp_us) = take(4usize)(input)?;
     let (input, ecu_id_bytes) = take(4usize)(input)?;
-    
+
     let ecu_id = String::from_utf8_lossy(ecu_id_bytes)
         .trim_end_matches('\0')
         .to_string();
-    
+
     Ok((input, (magic, ecu_id)))
 }
 
@@ -98,7 +98,11 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     };
 
     // The len field includes the Standard Header itself (4 bytes minimum)
-    let expected_remaining = if len as usize >= 4 { len as usize - 4 } else { 0 };
+    let expected_remaining = if len as usize >= 4 {
+        len as usize - 4
+    } else {
+        0
+    };
     if input.len() < expected_remaining {
         return Err(ParseError::Incomplete(expected_remaining - input.len()));
     }
@@ -124,9 +128,10 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         input = new_input;
         msg_apid = Some(apid);
         msg_ctid = Some(ctid);
-        
+
         let msg_type = msin & 0x07; // bits 0..=2
-        if msg_type == 0 { // 0 = DLT_TYPE_LOG
+        if msg_type == 0 {
+            // 0 = DLT_TYPE_LOG
             let log_lvl = (msin >> 3) & 0x07; // bits 3..=5. bits 4..=6 if shift by 4. Wait, spec says bits 3..=6. Let's trace it.
             // DLT Autocore spec: DLT_LOG_FATAL = 1, ERROR=2, WARN=3, INFO=4, DEBUG=5, VERBOSE=6.
             match log_lvl {
@@ -146,7 +151,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     if input.len() < actual_payload_len {
         return Err(ParseError::Incomplete(actual_payload_len - input.len()));
     }
-    
+
     let take_payload: IResult<&[u8], &[u8]> = take(actual_payload_len)(input);
     let (new_input, payload_bytes) = match take_payload {
         Ok(res) => res,
@@ -187,17 +192,17 @@ mod tests {
         // HTYP = 0b0010_0001 = 0x21
         msg.push(0x21); // HTYP
         msg.push(0x00); // MCNT (Message Counter)
-        
+
         let payload = b"Hello DLT";
         // Header lengths: Standard(4) + Extended(10) + Payload(9) = 23
         msg.extend_from_slice(&23u16.to_le_bytes()); // LEN 
 
         // 3. Extended Header (10 bytes)
         // MSIN: bit 0: Type (0=log), bit 1-3: Log Level (1=Fatal, 2=Error, 3=Warn, 4=Info, 5=Debug, 6=Verbose)
-        // LogLevel = Info (4) -> MSIN = 0b0100_0000 = 0x40 (Wait, type log is usually 0x00 at LSB, but let's assume LogInfo is 0x41 roughly. 
+        // LogLevel = Info (4) -> MSIN = 0b0100_0000 = 0x40 (Wait, type log is usually 0x00 at LSB, but let's assume LogInfo is 0x41 roughly.
         // Actually MSIN for Log Info: MSG_TYPE=0(log), MSG_INFO=4(info) -> 4 << 4 = 64 = 0x40.
-        // Let's use 0x41 for MSIN where LSB=1 is log message type, bits 1-3 are log level = info (4<<1 = 8) -> 0x01 | 0x08 = 0x09? 
-        // Actually DLT spec: MSIN bits 0-2 = Message Type (0=Log). bits 3-6 = Message Info (Log level: default 1..6). 
+        // Let's use 0x41 for MSIN where LSB=1 is log message type, bits 1-3 are log level = info (4<<1 = 8) -> 0x01 | 0x08 = 0x09?
+        // Actually DLT spec: MSIN bits 0-2 = Message Type (0=Log). bits 3-6 = Message Info (Log level: default 1..6).
         // For Log (0) and Info (4) => 4 << 3 = 32 = 0x20. Let's use 0x20.
         msg.push(0x20); // MSIN
         msg.push(1); // NOAR (1 argument for simplicity)
@@ -206,17 +211,17 @@ mod tests {
 
         // 4. Payload (9 bytes)
         msg.extend_from_slice(payload);
-        
+
         msg
     }
 
     #[test]
     fn test_parse_valid_dlt_message() {
         let data = build_valid_dlt_message_bytes();
-        
+
         let (remaining, msg) = parse_dlt_message(&data).expect("Parsing failed for valid message");
         assert_eq!(remaining.len(), 0, "Should consume the entire stream");
-        
+
         assert_eq!(msg.ecu_id, "ECU1");
         assert_eq!(msg.apid, Some("APP1".to_string()));
         assert_eq!(msg.ctid, Some("CTX1".to_string()));

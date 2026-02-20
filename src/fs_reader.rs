@@ -31,7 +31,10 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
             let mut archive = zip::ZipArchive::new(file)?;
             // for MVP, we just take the first file and slurp it.
             if archive.len() == 0 {
-                return Err(Error::new(ErrorKind::InvalidData, "Zip file string is empty"));
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "Zip file string is empty",
+                ));
             }
             let mut zipped_file = archive.by_index(0)?;
             let mut buffer = Vec::new();
@@ -45,11 +48,11 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
-    use std::fs;
-    use std::io::Write;
     use flate2::Compression;
     use flate2::write::GzEncoder;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
     use zip::ZipWriter;
 
     #[test]
@@ -70,7 +73,7 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let gz_path = tmp_dir.path().join("compressed.gz");
         let dummy_data = b"DLT_DUMMY_DATA_GZIPPED";
-        
+
         let file = fs::File::create(&gz_path).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
         encoder.write_all(dummy_data).unwrap();

@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossterm = "0.29.0"
 flate2 = "1.1.9"
 nom = "8.0.0"
+ratatui = "0.30.0"
 zip = "8.1.0"
 
 [dev-dependencies]
