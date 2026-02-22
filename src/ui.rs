@@ -52,7 +52,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .height(1)
                 .bottom_margin(1);
 
-            let rows = app.logs.iter().map(|log| {
+            let rows = app.filtered_log_indices.iter().map(|&idx| {
+                let log = &app.logs[idx];
                 let (level_str, level_color) = match &log.log_level {
                     Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
                     Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
@@ -107,16 +108,21 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
     }
 
-    let status_str = match app.screen {
+    let mut status_str = match app.screen {
         AppScreen::Explorer => format!(
             "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
             app.explorer_items.len()
         ),
         AppScreen::LogViewer => format!(
-            "Mode: Viewer | Logs: {} | (j/k) Scroll | (Esc) List | (q) Quit",
+            "Mode: Viewer | Logs: {}/{} | (j/k) Scroll | (/) Search | (Esc) List | (q) Quit",
+            app.filtered_log_indices.len(),
             app.logs.len()
         ),
     };
+
+    if app.is_entering_filter {
+        status_str = format!("Search: {}_", app.filter_input);
+    }
 
     let status =
         Paragraph::new(status_str).block(Block::default().title("Status").borders(Borders::ALL));

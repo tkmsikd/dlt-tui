@@ -65,35 +65,69 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
         terminal.draw(|f| ui::draw(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => app.on_key_q(),
-                KeyCode::Char('j') | KeyCode::Down => app.on_down(),
-                KeyCode::Char('k') | KeyCode::Up => app.on_up(),
-                KeyCode::Char('g') | KeyCode::Home => app.on_home(),
-                KeyCode::Char('G') | KeyCode::End => app.on_end(),
-                KeyCode::Enter => {
-                    // MVP logic for Enter key (navigate or open)
-                    if app.screen == AppScreen::Explorer {
-                        if !app.explorer_items.is_empty() {
-                            let selected_item = &app.explorer_items[app.explorer_selected_index];
-                            if selected_item.is_dir {
-                                let path_clone = selected_item.path.clone();
-                                let _ = app.load_directory(&path_clone);
-                            } else {
-                                let path_clone = selected_item.path.clone();
-                                let _ = app.load_file(&path_clone);
-                            }
+            if app.is_entering_filter {
+                match key.code {
+                    KeyCode::Enter => {
+                        app.is_entering_filter = false;
+                        app.filter.text = if app.filter_input.is_empty() {
+                            None
+                        } else {
+                            Some(app.filter_input.clone())
+                        };
+                        app.apply_filter();
+                    }
+                    KeyCode::Esc => {
+                        app.is_entering_filter = false;
+                        app.filter_input.clear();
+                        app.filter.text = None;
+                        // reset filter if canceled
+                        app.apply_filter();
+                    }
+                    KeyCode::Char(c) => {
+                        app.filter_input.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.filter_input.pop();
+                    }
+                    _ => {}
+                }
+            } else {
+                match key.code {
+                    KeyCode::Char('q') => app.on_key_q(),
+                    KeyCode::Char('j') | KeyCode::Down => app.on_down(),
+                    KeyCode::Char('k') | KeyCode::Up => app.on_up(),
+                    KeyCode::Char('g') | KeyCode::Home => app.on_home(),
+                    KeyCode::Char('G') | KeyCode::End => app.on_end(),
+                    KeyCode::Char('/') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.is_entering_filter = true;
                         }
-                    } else if app.screen == AppScreen::LogViewer {
-                        app.screen = AppScreen::Explorer; // Return to explorer
                     }
-                }
-                KeyCode::Esc => {
-                    if app.screen == AppScreen::LogViewer {
-                        app.screen = AppScreen::Explorer;
+                    KeyCode::Enter => {
+                        // MVP logic for Enter key (navigate or open)
+                        if app.screen == AppScreen::Explorer {
+                            if !app.explorer_items.is_empty() {
+                                let selected_item =
+                                    &app.explorer_items[app.explorer_selected_index];
+                                if selected_item.is_dir {
+                                    let path_clone = selected_item.path.clone();
+                                    let _ = app.load_directory(&path_clone);
+                                } else {
+                                    let path_clone = selected_item.path.clone();
+                                    let _ = app.load_file(&path_clone);
+                                }
+                            }
+                        } else if app.screen == AppScreen::LogViewer {
+                            app.screen = AppScreen::Explorer; // Return to explorer
+                        }
                     }
+                    KeyCode::Esc => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.screen = AppScreen::Explorer;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 

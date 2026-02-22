@@ -3,10 +3,18 @@ use crate::fs_reader;
 use crate::parser::{self, DltMessage};
 use std::path::Path;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
     Explorer,
     LogViewer,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Filter {
+    pub min_level: Option<crate::parser::LogLevel>,
+    pub app_id: Option<String>,
+    pub ctx_id: Option<String>,
+    pub text: Option<String>,
 }
 
 pub struct App {
@@ -14,7 +22,11 @@ pub struct App {
     pub explorer_items: Vec<FileEntry>,
     pub explorer_selected_index: usize,
     pub logs: Vec<DltMessage>,
+    pub filtered_log_indices: Vec<usize>,
     pub logs_selected_index: usize,
+    pub filter: Filter,
+    pub is_entering_filter: bool,
+    pub filter_input: String,
     pub should_quit: bool,
 }
 
@@ -31,7 +43,11 @@ impl App {
             explorer_items: vec![],
             explorer_selected_index: 0,
             logs: vec![],
+            filtered_log_indices: vec![],
             logs_selected_index: 0,
+            filter: Filter::default(),
+            is_entering_filter: false,
+            filter_input: String::new(),
             should_quit: false,
         }
     }
@@ -62,6 +78,7 @@ impl App {
     pub fn load_file(&mut self, path: &Path) -> std::io::Result<()> {
         self.logs.clear();
         self.logs_selected_index = 0;
+        self.filter = Filter::default();
 
         let mut stream = fs_reader::open_dlt_stream(path)?;
         let mut buffer = Vec::new();
@@ -82,8 +99,67 @@ impl App {
             }
         }
 
+        self.apply_filter();
         self.screen = AppScreen::LogViewer;
         Ok(())
+    }
+
+    pub fn apply_filter(&mut self) {
+        self.filtered_log_indices.clear();
+
+        for (idx, log) in self.logs.iter().enumerate() {
+            let mut matches = true;
+
+            if let Some(ref min_level) = self.filter.min_level {
+                // Determine if log_level is severe enough or matches
+                // Simplification for MVP: We just check exact equality or we can skip for now
+                // Actually, let's just do exact matching or implement a partial ord on LogLevel
+                // Since LogLevel isn't Ord yet, we will compare them by converting to an integer.
+                let level_val = |l: &crate::parser::LogLevel| match l {
+                    crate::parser::LogLevel::Fatal => 1,
+                    crate::parser::LogLevel::Error => 2,
+                    crate::parser::LogLevel::Warn => 3,
+                    crate::parser::LogLevel::Info => 4,
+                    crate::parser::LogLevel::Debug => 5,
+                    crate::parser::LogLevel::Verbose => 6,
+                    crate::parser::LogLevel::Unknown(_) => 7,
+                };
+
+                let target_val = level_val(min_level);
+                let current_val = log.log_level.as_ref().map(level_val).unwrap_or(7);
+
+                if current_val > target_val {
+                    matches = false;
+                }
+            }
+
+            if let Some(ref text) = self.filter.text
+                && !log
+                    .payload_text
+                    .to_lowercase()
+                    .contains(&text.to_lowercase())
+            {
+                matches = false;
+            }
+
+            if let Some(ref app_id) = self.filter.app_id
+                && log.apid.as_deref() != Some(app_id.as_str())
+            {
+                matches = false;
+            }
+
+            if let Some(ref ctx_id) = self.filter.ctx_id
+                && log.ctid.as_deref() != Some(ctx_id.as_str())
+            {
+                matches = false;
+            }
+
+            if matches {
+                self.filtered_log_indices.push(idx);
+            }
+        }
+
+        self.logs_selected_index = 0;
     }
 
     pub fn on_home(&mut self) {
@@ -101,8 +177,8 @@ impl App {
                 }
             }
             AppScreen::LogViewer => {
-                if !self.logs.is_empty() {
-                    self.logs_selected_index = self.logs.len() - 1;
+                if !self.filtered_log_indices.is_empty() {
+                    self.logs_selected_index = self.filtered_log_indices.len() - 1;
                 }
             }
         }
@@ -137,7 +213,9 @@ impl App {
                 }
             }
             AppScreen::LogViewer => {
-                if !self.logs.is_empty() && self.logs_selected_index < self.logs.len() - 1 {
+                if !self.filtered_log_indices.is_empty()
+                    && self.logs_selected_index < self.filtered_log_indices.len() - 1
+                {
                     self.logs_selected_index += 1;
                 }
             }
@@ -184,7 +262,11 @@ mod tests {
             ],
             explorer_selected_index: 0,
             logs: vec![],
+            filtered_log_indices: vec![],
             logs_selected_index: 0,
+            filter: Filter::default(),
+            is_entering_filter: false,
+            filter_input: String::new(),
             should_quit: false,
         };
         app
@@ -246,6 +328,8 @@ mod tests {
                 payload_text: "Mock Payload".to_string(),
             });
         }
+
+        app.apply_filter();
 
         // Test list traversal for logs
         app.on_up();
