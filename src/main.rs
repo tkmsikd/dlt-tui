@@ -69,10 +69,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> io::Result<()> {
+    let tick_rate = std::time::Duration::from_millis(50);
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
-        if let Event::Key(key) = event::read()? {
+        if crossterm::event::poll(tick_rate)?
+            && let Event::Key(key) = event::read()?
+        {
             // Dismiss error on any key press
             if app.error_message.is_some() {
                 app.error_message = None;
@@ -160,6 +163,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                             app.filter_input.clear();
                         }
                     }
+                    KeyCode::Char('C') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.filter = crate::app::Filter::default();
+                            app.apply_filter();
+                        }
+                    }
                     KeyCode::Enter => {
                         // MVP logic for Enter key (navigate or open)
                         if app.screen == AppScreen::Explorer {
@@ -180,10 +189,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                                     }
                                 }
                             }
-                        } else if app.screen == AppScreen::LogViewer {
-                            if !app.filtered_log_indices.is_empty() {
-                                app.screen = AppScreen::LogDetail; 
-                            }
+                        } else if app.screen == AppScreen::LogViewer
+                            && !app.filtered_log_indices.is_empty()
+                        {
+                            app.screen = AppScreen::LogDetail;
                         }
                     }
                     KeyCode::Esc => {
@@ -196,7 +205,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                     _ => {}
                 }
             }
-        }
+        } // Close if crossterm::event::poll !
+
+        app.on_tick();
 
         if app.should_quit {
             return Ok(());

@@ -109,7 +109,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         AppScreen::LogDetail => {
             if let Some(&idx) = app.filtered_log_indices.get(app.logs_selected_index) {
                 let log = &app.logs[idx];
-                
+
                 let detail_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
@@ -129,30 +129,41 @@ pub fn draw(f: &mut Frame, app: &App) {
                     Block::default()
                         .title("Log Metadata & Extracted Text")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Cyan))
+                        .border_style(Style::default().fg(Color::Cyan)),
                 );
                 f.render_widget(meta_para, detail_chunks[0]);
 
                 let mut hex_lines = String::new();
                 for chunk in log.payload_raw.chunks(16) {
-                    let hex_parts: Vec<String> = chunk.iter().map(|b| format!("{:02X}", b)).collect();
-                    let char_parts: String = chunk.iter().map(|&b| {
-                        if (32..=126).contains(&b) { b as char } else { '.' }
-                    }).collect();
-                    
+                    let hex_parts: Vec<String> =
+                        chunk.iter().map(|b| format!("{:02X}", b)).collect();
+                    let char_parts: String = chunk
+                        .iter()
+                        .map(|&b| {
+                            if (32..=126).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
+                        .collect();
+
                     let mut hex_padded = hex_parts.join(" ");
                     while hex_padded.len() < 47 {
                         hex_padded.push(' ');
                     }
-                    
+
                     hex_lines.push_str(&format!("{}  |{}\n", hex_padded, char_parts));
                 }
 
                 let hex_para = Paragraph::new(hex_lines).block(
                     Block::default()
-                        .title(format!("Payload Hex Dump ({} bytes)", log.payload_raw.len()))
+                        .title(format!(
+                            "Payload Hex Dump ({} bytes)",
+                            log.payload_raw.len()
+                        ))
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Magenta))
+                        .border_style(Style::default().fg(Color::Magenta)),
                 );
                 f.render_widget(hex_para, detail_chunks[1]);
             }
@@ -170,11 +181,22 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
                 app.explorer_items.len()
             ),
-            AppScreen::LogViewer => format!(
-                "Mode: Viewer | Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (Esc) List",
-                app.filtered_log_indices.len(),
-                app.logs.len()
-            ),
+            AppScreen::LogViewer => {
+                let mut actives = Vec::new();
+                if let Some(ref t) = app.filter.text { actives.push(format!("Text='{}'", t)); }
+                if let Some(ref t) = app.filter.app_id { actives.push(format!("APP='{}'", t)); }
+                if let Some(ref t) = app.filter.ctx_id { actives.push(format!("CTX='{}'", t)); }
+                if let Some(ref t) = app.filter.min_level { actives.push(format!("Level={:?}", t)); }
+                let filter_str = if actives.is_empty() { String::new() } else { format!("Filters: [{}] | ", actives.join(", ")) };
+
+                format!(
+                    "Mode: Viewer | {}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (Esc) List",
+                    if app.is_loading { "[LOADING...] " } else { "" },
+                    filter_str,
+                    app.filtered_log_indices.len(),
+                    app.logs.len()
+                )
+            },
             AppScreen::LogDetail => format!(
                 "Mode: Detail | Log {}/{} | (j/k) Scroll Logs | (Esc) Back to Viewer",
                 app.logs_selected_index + 1,

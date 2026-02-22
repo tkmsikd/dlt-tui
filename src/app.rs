@@ -1,6 +1,5 @@
 use crate::explorer::{self, FileEntry};
-use crate::fs_reader;
-use crate::parser::{self, DltMessage};
+use crate::parser::DltMessage;
 use std::path::Path;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -38,6 +37,8 @@ pub struct App {
     pub filter_input: String,
     pub error_message: Option<String>,
     pub should_quit: bool,
+    pub log_receiver: Option<std::sync::mpsc::Receiver<DltMessage>>,
+    pub is_loading: bool,
 }
 
 impl Default for App {
@@ -60,6 +61,8 @@ impl App {
             filter_input: String::new(),
             error_message: None,
             should_quit: false,
+            log_receiver: None,
+            is_loading: false,
         }
     }
 
@@ -88,31 +91,97 @@ impl App {
 
     pub fn load_file(&mut self, path: &Path) -> std::io::Result<()> {
         self.logs.clear();
+        self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
         self.filter = Filter::default();
+        self.is_loading = true;
 
-        let mut stream = fs_reader::open_dlt_stream(path)?;
-        let mut buffer = Vec::new();
-        std::io::Read::read_to_end(&mut stream, &mut buffer)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.log_receiver = Some(rx);
 
-        // Basic MVP Parse loop
-        let mut input = buffer.as_slice();
-        while !input.is_empty() {
-            match parser::parse_dlt_message(input) {
-                Ok((remaining, msg)) => {
-                    self.logs.push(msg);
-                    input = remaining;
-                }
-                Err(_) => {
-                    // For MVP: On error, just break out (or try to find next magic number ideally)
-                    break;
+        let path_buf = path.to_path_buf();
+        std::thread::spawn(move || {
+            let mut stream = match crate::fs_reader::open_dlt_stream(&path_buf) {
+                Ok(s) => s,
+                Err(_) => return, // Ignore for now
+            };
+            let mut buffer = Vec::new();
+            if std::io::Read::read_to_end(&mut stream, &mut buffer).is_err() {
+                return;
+            }
+
+            let mut input = buffer.as_slice();
+            while !input.is_empty() {
+                match crate::parser::parse_dlt_message(input) {
+                    Ok((remaining, msg)) => {
+                        let _ = tx.send(msg);
+                        input = remaining;
+                    }
+                    Err(_) => break,
                 }
             }
-        }
+        });
 
         self.apply_filter();
         self.screen = AppScreen::LogViewer;
         Ok(())
+    }
+
+    fn check_log_against_filter(
+        log: &DltMessage,
+        filter: &Filter,
+        regex: Option<&regex::Regex>,
+    ) -> bool {
+        if let Some(ref min_level) = filter.min_level {
+            // Determine if log_level is severe enough or matches
+            // Simplification for MVP: We just check exact equality or we can skip for now
+            // Actually, let's just do exact matching or implement a partial ord on LogLevel
+            // Since LogLevel isn't Ord yet, we will compare them by converting to an integer.
+            let level_val = |l: &crate::parser::LogLevel| match l {
+                crate::parser::LogLevel::Fatal => 1,
+                crate::parser::LogLevel::Error => 2,
+                crate::parser::LogLevel::Warn => 3,
+                crate::parser::LogLevel::Info => 4,
+                crate::parser::LogLevel::Debug => 5,
+                crate::parser::LogLevel::Verbose => 6,
+                crate::parser::LogLevel::Unknown(_) => 7,
+            };
+
+            let target_val = level_val(min_level);
+            let current_val = log.log_level.as_ref().map(level_val).unwrap_or(7);
+
+            if current_val > target_val {
+                return false;
+            }
+        }
+
+        if let Some(ref text) = filter.text {
+            if let Some(re) = regex {
+                if !re.is_match(&log.payload_text) {
+                    return false;
+                }
+            } else if !log
+                .payload_text
+                .to_lowercase()
+                .contains(&text.to_lowercase())
+            {
+                return false;
+            }
+        }
+
+        if let Some(ref app_id) = filter.app_id
+            && log.apid.as_deref() != Some(app_id.as_str())
+        {
+            return false;
+        }
+
+        if let Some(ref ctx_id) = filter.ctx_id
+            && log.ctid.as_deref() != Some(ctx_id.as_str())
+        {
+            return false;
+        }
+
+        true
     }
 
     pub fn apply_filter(&mut self) {
@@ -127,58 +196,7 @@ impl App {
         });
 
         for (idx, log) in self.logs.iter().enumerate() {
-            let mut matches = true;
-
-            if let Some(ref min_level) = self.filter.min_level {
-                // Determine if log_level is severe enough or matches
-                // Simplification for MVP: We just check exact equality or we can skip for now
-                // Actually, let's just do exact matching or implement a partial ord on LogLevel
-                // Since LogLevel isn't Ord yet, we will compare them by converting to an integer.
-                let level_val = |l: &crate::parser::LogLevel| match l {
-                    crate::parser::LogLevel::Fatal => 1,
-                    crate::parser::LogLevel::Error => 2,
-                    crate::parser::LogLevel::Warn => 3,
-                    crate::parser::LogLevel::Info => 4,
-                    crate::parser::LogLevel::Debug => 5,
-                    crate::parser::LogLevel::Verbose => 6,
-                    crate::parser::LogLevel::Unknown(_) => 7,
-                };
-
-                let target_val = level_val(min_level);
-                let current_val = log.log_level.as_ref().map(level_val).unwrap_or(7);
-
-                if current_val > target_val {
-                    matches = false;
-                }
-            }
-
-            if let Some(ref text) = self.filter.text {
-                if let Some(re) = &text_regex {
-                    if !re.is_match(&log.payload_text) {
-                        matches = false;
-                    }
-                } else if !log
-                    .payload_text
-                    .to_lowercase()
-                    .contains(&text.to_lowercase())
-                {
-                    matches = false;
-                }
-            }
-
-            if let Some(ref app_id) = self.filter.app_id
-                && log.apid.as_deref() != Some(app_id.as_str())
-            {
-                matches = false;
-            }
-
-            if let Some(ref ctx_id) = self.filter.ctx_id
-                && log.ctid.as_deref() != Some(ctx_id.as_str())
-            {
-                matches = false;
-            }
-
-            if matches {
+            if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
                 self.filtered_log_indices.push(idx);
             }
         }
@@ -209,7 +227,44 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        // Handle tick events for animations or asynchronous checks
+        if let Some(rx) = &self.log_receiver {
+            let mut added = false;
+            let current_len = self.logs.len();
+
+            let text_regex = self.filter.text.as_ref().and_then(|text| {
+                regex::RegexBuilder::new(text)
+                    .case_insensitive(true)
+                    .build()
+                    .ok()
+            });
+
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        self.logs.push(msg);
+                        added = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.is_loading = false;
+                        self.log_receiver = None;
+                        break; // Channel closed, thread finished
+                    }
+                }
+            }
+
+            if added {
+                // Determine matches incrementally to avoid full rescan
+                for idx in current_len..self.logs.len() {
+                    let log = &self.logs[idx];
+                    if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
+                        self.filtered_log_indices.push(idx);
+                    }
+                }
+            }
+        }
     }
 
     pub fn on_up(&mut self) {
@@ -294,6 +349,8 @@ mod tests {
             filter_input: String::new(),
             error_message: None,
             should_quit: false,
+            log_receiver: None,
+            is_loading: false,
         };
         app
     }
