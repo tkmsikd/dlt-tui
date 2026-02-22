@@ -35,6 +35,7 @@ pub struct App {
     pub filter: Filter,
     pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
+    pub error_message: Option<String>,
     pub should_quit: bool,
 }
 
@@ -56,6 +57,7 @@ impl App {
             filter: Filter::default(),
             filter_input_mode: None,
             filter_input: String::new(),
+            error_message: None,
             should_quit: false,
         }
     }
@@ -288,6 +290,7 @@ mod tests {
             filter: Filter::default(),
             filter_input_mode: None,
             filter_input: String::new(),
+            error_message: None,
             should_quit: false,
         };
         app

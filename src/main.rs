@@ -34,12 +34,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if init_path.is_dir() {
-        app.load_directory(&init_path)?;
+        if let Err(e) = app.load_directory(&init_path) {
+            app.error_message = Some(format!("Could not load directory: {}", e));
+        }
     } else {
         // If passed a file, attempt to load it right away
         let parent = init_path.parent().unwrap_or(&init_path);
-        app.load_directory(parent)?;
-        app.load_file(&init_path)?;
+        if let Err(e) = app.load_directory(parent) {
+            app.error_message = Some(format!("Could not load directory: {}", e));
+        }
+        if app.error_message.is_none()
+            && let Err(e) = app.load_file(&init_path)
+        {
+            app.error_message = Some(format!("Could not load file: {}", e));
+        }
     }
 
     let res = run_app(&mut terminal, app);
@@ -65,6 +73,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
         terminal.draw(|f| ui::draw(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
+            // Dismiss error on any key press
+            if app.error_message.is_some() {
+                app.error_message = None;
+                continue;
+            }
+
             if let Some(mode) = app.filter_input_mode.clone() {
                 match key.code {
                     KeyCode::Enter => {
@@ -154,10 +168,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                                     &app.explorer_items[app.explorer_selected_index];
                                 if selected_item.is_dir {
                                     let path_clone = selected_item.path.clone();
-                                    let _ = app.load_directory(&path_clone);
+                                    if let Err(e) = app.load_directory(&path_clone) {
+                                        app.error_message =
+                                            Some(format!("Could not open directory: {}", e));
+                                    }
                                 } else {
                                     let path_clone = selected_item.path.clone();
-                                    let _ = app.load_file(&path_clone);
+                                    if let Err(e) = app.load_file(&path_clone) {
+                                        app.error_message =
+                                            Some(format!("Could not open file: {}", e));
+                                    }
                                 }
                             }
                         } else if app.screen == AppScreen::LogViewer {

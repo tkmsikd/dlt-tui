@@ -108,30 +108,40 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
     }
 
-    let mut status_str = match app.screen {
-        AppScreen::Explorer => format!(
-            "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
-            app.explorer_items.len()
-        ),
-        AppScreen::LogViewer => format!(
-            "Mode: Viewer | Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (Esc) List",
-            app.filtered_log_indices.len(),
-            app.logs.len()
-        ),
+    let (status_str, status_style) = if let Some(ref err) = app.error_message {
+        (
+            format!("ERROR: {} | [Press any key to dismiss]", err),
+            Style::default().bg(Color::Red).fg(Color::White),
+        )
+    } else {
+        let mut string = match app.screen {
+            AppScreen::Explorer => format!(
+                "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
+                app.explorer_items.len()
+            ),
+            AppScreen::LogViewer => format!(
+                "Mode: Viewer | Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (Esc) List",
+                app.filtered_log_indices.len(),
+                app.logs.len()
+            ),
+        };
+
+        if let Some(ref mode) = app.filter_input_mode {
+            let prefix = match mode {
+                crate::app::FilterInputMode::Text => "Search Text",
+                crate::app::FilterInputMode::AppId => "Filter APP ID",
+                crate::app::FilterInputMode::CtxId => "Filter CTX ID",
+                crate::app::FilterInputMode::MinLevel => "Filter Min Level (F/E/W/I/D/V)",
+            };
+            string = format!("{}: {}_", prefix, app.filter_input);
+        }
+
+        (string, Style::default())
     };
 
-    if let Some(ref mode) = app.filter_input_mode {
-        let prefix = match mode {
-            crate::app::FilterInputMode::Text => "Search Text",
-            crate::app::FilterInputMode::AppId => "Filter APP ID",
-            crate::app::FilterInputMode::CtxId => "Filter CTX ID",
-            crate::app::FilterInputMode::MinLevel => "Filter Min Level (F/E/W/I/D/V)",
-        };
-        status_str = format!("{}: {}_", prefix, app.filter_input);
-    }
-
-    let status =
-        Paragraph::new(status_str).block(Block::default().title("Status").borders(Borders::ALL));
+    let status = Paragraph::new(status_str)
+        .style(status_style)
+        .block(Block::default().title("Status").borders(Borders::ALL));
     f.render_widget(status, chunks[1]);
 }
 
