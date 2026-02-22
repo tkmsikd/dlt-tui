@@ -7,6 +7,7 @@ use std::path::Path;
 pub enum AppScreen {
     Explorer,
     LogViewer,
+    LogDetail,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -188,7 +189,7 @@ impl App {
     pub fn on_home(&mut self) {
         match self.screen {
             AppScreen::Explorer => self.explorer_selected_index = 0,
-            AppScreen::LogViewer => self.logs_selected_index = 0,
+            AppScreen::LogViewer | AppScreen::LogDetail => self.logs_selected_index = 0,
         }
     }
 
@@ -199,7 +200,7 @@ impl App {
                     self.explorer_selected_index = self.explorer_items.len() - 1;
                 }
             }
-            AppScreen::LogViewer => {
+            AppScreen::LogViewer | AppScreen::LogDetail => {
                 if !self.filtered_log_indices.is_empty() {
                     self.logs_selected_index = self.filtered_log_indices.len() - 1;
                 }
@@ -218,7 +219,7 @@ impl App {
                     self.explorer_selected_index -= 1;
                 }
             }
-            AppScreen::LogViewer => {
+            AppScreen::LogViewer | AppScreen::LogDetail => {
                 if self.logs_selected_index > 0 {
                     self.logs_selected_index -= 1;
                 }
@@ -235,7 +236,7 @@ impl App {
                     self.explorer_selected_index += 1;
                 }
             }
-            AppScreen::LogViewer => {
+            AppScreen::LogViewer | AppScreen::LogDetail => {
                 if !self.filtered_log_indices.is_empty()
                     && self.logs_selected_index < self.filtered_log_indices.len() - 1
                 {
@@ -249,7 +250,8 @@ impl App {
         // For MVP, just flip state for now
         match self.screen {
             AppScreen::Explorer => self.screen = AppScreen::LogViewer,
-            AppScreen::LogViewer => self.screen = AppScreen::Explorer,
+            AppScreen::LogViewer => self.screen = AppScreen::LogDetail,
+            AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
         }
     }
 
@@ -350,6 +352,7 @@ mod tests {
                 ctid: None,
                 log_level: None,
                 payload_text: "Mock Payload".to_string(),
+                payload_raw: b"Mock Payload".to_vec(),
             });
         }
 

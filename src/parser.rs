@@ -17,6 +17,7 @@ pub struct DltMessage {
     pub ctid: Option<String>,
     pub log_level: Option<LogLevel>,
     pub payload_text: String,
+    pub payload_raw: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -166,6 +167,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
             ctid: msg_ctid,
             log_level: msg_log_level,
             payload_text,
+            payload_raw: payload_bytes.to_vec(),
         },
     ))
 }
@@ -224,6 +226,7 @@ mod tests {
         assert_eq!(msg.log_level, Some(LogLevel::Info));
         // The payload string might just be a basic string extraction for testing purposes
         assert_eq!(msg.payload_text, "Hello DLT");
+        assert_eq!(msg.payload_raw, b"Hello DLT".to_vec());
     }
 
     #[test]

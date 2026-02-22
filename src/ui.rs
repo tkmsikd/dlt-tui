@@ -106,6 +106,57 @@ pub fn draw(f: &mut Frame, app: &App) {
             state.select(Some(app.logs_selected_index));
             f.render_stateful_widget(table, chunks[0], &mut state);
         }
+        AppScreen::LogDetail => {
+            if let Some(&idx) = app.filtered_log_indices.get(app.logs_selected_index) {
+                let log = &app.logs[idx];
+                
+                let detail_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(chunks[0]);
+
+                let meta_text = format!(
+                    "Timestamp: {}\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    log.timestamp_us,
+                    log.ecu_id,
+                    log.apid.as_deref().unwrap_or("-"),
+                    log.ctid.as_deref().unwrap_or("-"),
+                    log.log_level,
+                    log.payload_text
+                );
+
+                let meta_para = Paragraph::new(meta_text).block(
+                    Block::default()
+                        .title("Log Metadata & Extracted Text")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan))
+                );
+                f.render_widget(meta_para, detail_chunks[0]);
+
+                let mut hex_lines = String::new();
+                for chunk in log.payload_raw.chunks(16) {
+                    let hex_parts: Vec<String> = chunk.iter().map(|b| format!("{:02X}", b)).collect();
+                    let char_parts: String = chunk.iter().map(|&b| {
+                        if (32..=126).contains(&b) { b as char } else { '.' }
+                    }).collect();
+                    
+                    let mut hex_padded = hex_parts.join(" ");
+                    while hex_padded.len() < 47 {
+                        hex_padded.push(' ');
+                    }
+                    
+                    hex_lines.push_str(&format!("{}  |{}\n", hex_padded, char_parts));
+                }
+
+                let hex_para = Paragraph::new(hex_lines).block(
+                    Block::default()
+                        .title(format!("Payload Hex Dump ({} bytes)", log.payload_raw.len()))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Magenta))
+                );
+                f.render_widget(hex_para, detail_chunks[1]);
+            }
+        }
     }
 
     let (status_str, status_style) = if let Some(ref err) = app.error_message {
@@ -123,6 +174,11 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Mode: Viewer | Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (Esc) List",
                 app.filtered_log_indices.len(),
                 app.logs.len()
+            ),
+            AppScreen::LogDetail => format!(
+                "Mode: Detail | Log {}/{} | (j/k) Scroll Logs | (Esc) Back to Viewer",
+                app.logs_selected_index + 1,
+                app.filtered_log_indices.len()
             ),
         };
 

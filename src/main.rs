@@ -181,12 +181,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                                 }
                             }
                         } else if app.screen == AppScreen::LogViewer {
-                            app.screen = AppScreen::Explorer; // Return to explorer
+                            if !app.filtered_log_indices.is_empty() {
+                                app.screen = AppScreen::LogDetail; 
+                            }
                         }
                     }
                     KeyCode::Esc => {
                         if app.screen == AppScreen::LogViewer {
                             app.screen = AppScreen::Explorer;
+                        } else if app.screen == AppScreen::LogDetail {
+                            app.screen = AppScreen::LogViewer;
                         }
                     }
                     _ => {}
