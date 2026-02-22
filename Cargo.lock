@@ -351,6 +351,7 @@ dependencies = [
  "flate2",
  "nom 8.0.0",
  "ratatui",
+ "regex",
  "tempfile",
  "zip",
 ]

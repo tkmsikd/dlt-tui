@@ -114,14 +114,20 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.explorer_items.len()
         ),
         AppScreen::LogViewer => format!(
-            "Mode: Viewer | Logs: {}/{} | (j/k) Scroll | (/) Search | (Esc) List | (q) Quit",
+            "Mode: Viewer | Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (Esc) List",
             app.filtered_log_indices.len(),
             app.logs.len()
         ),
     };
 
-    if app.is_entering_filter {
-        status_str = format!("Search: {}_", app.filter_input);
+    if let Some(ref mode) = app.filter_input_mode {
+        let prefix = match mode {
+            crate::app::FilterInputMode::Text => "Search Text",
+            crate::app::FilterInputMode::AppId => "Filter APP ID",
+            crate::app::FilterInputMode::CtxId => "Filter CTX ID",
+            crate::app::FilterInputMode::MinLevel => "Filter Min Level (F/E/W/I/D/V)",
+        };
+        status_str = format!("{}: {}_", prefix, app.filter_input);
     }
 
     let status =

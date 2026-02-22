@@ -17,6 +17,14 @@ pub struct Filter {
     pub text: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum FilterInputMode {
+    Text,
+    AppId,
+    CtxId,
+    MinLevel,
+}
+
 pub struct App {
     pub screen: AppScreen,
     pub explorer_items: Vec<FileEntry>,
@@ -25,7 +33,7 @@ pub struct App {
     pub filtered_log_indices: Vec<usize>,
     pub logs_selected_index: usize,
     pub filter: Filter,
-    pub is_entering_filter: bool,
+    pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
     pub should_quit: bool,
 }
@@ -46,7 +54,7 @@ impl App {
             filtered_log_indices: vec![],
             logs_selected_index: 0,
             filter: Filter::default(),
-            is_entering_filter: false,
+            filter_input_mode: None,
             filter_input: String::new(),
             should_quit: false,
         }
@@ -107,6 +115,14 @@ impl App {
     pub fn apply_filter(&mut self) {
         self.filtered_log_indices.clear();
 
+        // Compile regex once if text filter exists
+        let text_regex = self.filter.text.as_ref().and_then(|text| {
+            regex::RegexBuilder::new(text)
+                .case_insensitive(true)
+                .build()
+                .ok() // If invalid regex, we will fallback to plain string search
+        });
+
         for (idx, log) in self.logs.iter().enumerate() {
             let mut matches = true;
 
@@ -133,13 +149,18 @@ impl App {
                 }
             }
 
-            if let Some(ref text) = self.filter.text
-                && !log
+            if let Some(ref text) = self.filter.text {
+                if let Some(re) = &text_regex {
+                    if !re.is_match(&log.payload_text) {
+                        matches = false;
+                    }
+                } else if !log
                     .payload_text
                     .to_lowercase()
                     .contains(&text.to_lowercase())
-            {
-                matches = false;
+                {
+                    matches = false;
+                }
             }
 
             if let Some(ref app_id) = self.filter.app_id
@@ -265,7 +286,7 @@ mod tests {
             filtered_log_indices: vec![],
             logs_selected_index: 0,
             filter: Filter::default(),
-            is_entering_filter: false,
+            filter_input_mode: None,
             filter_input: String::new(),
             should_quit: false,
         };

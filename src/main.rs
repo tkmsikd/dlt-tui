@@ -65,22 +65,46 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
         terminal.draw(|f| ui::draw(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
-            if app.is_entering_filter {
+            if let Some(mode) = app.filter_input_mode.clone() {
                 match key.code {
                     KeyCode::Enter => {
-                        app.is_entering_filter = false;
-                        app.filter.text = if app.filter_input.is_empty() {
+                        app.filter_input_mode = None;
+
+                        let input = if app.filter_input.is_empty() {
                             None
                         } else {
                             Some(app.filter_input.clone())
                         };
+
+                        match mode {
+                            crate::app::FilterInputMode::Text => app.filter.text = input,
+                            crate::app::FilterInputMode::AppId => app.filter.app_id = input,
+                            crate::app::FilterInputMode::CtxId => app.filter.ctx_id = input,
+                            crate::app::FilterInputMode::MinLevel => {
+                                app.filter.min_level =
+                                    match app.filter_input.to_lowercase().as_str() {
+                                        "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
+                                        "e" | "error" => Some(crate::parser::LogLevel::Error),
+                                        "w" | "warn" => Some(crate::parser::LogLevel::Warn),
+                                        "i" | "info" => Some(crate::parser::LogLevel::Info),
+                                        "d" | "debug" => Some(crate::parser::LogLevel::Debug),
+                                        "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
+                                        _ => None,
+                                    };
+                            }
+                        }
                         app.apply_filter();
                     }
                     KeyCode::Esc => {
-                        app.is_entering_filter = false;
+                        app.filter_input_mode = None;
                         app.filter_input.clear();
-                        app.filter.text = None;
-                        // reset filter if canceled
+                        match mode {
+                            crate::app::FilterInputMode::Text => app.filter.text = None,
+                            crate::app::FilterInputMode::AppId => app.filter.app_id = None,
+                            crate::app::FilterInputMode::CtxId => app.filter.ctx_id = None,
+                            crate::app::FilterInputMode::MinLevel => app.filter.min_level = None,
+                        }
+
                         app.apply_filter();
                     }
                     KeyCode::Char(c) => {
@@ -100,7 +124,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                     KeyCode::Char('G') | KeyCode::End => app.on_end(),
                     KeyCode::Char('/') => {
                         if app.screen == AppScreen::LogViewer {
-                            app.is_entering_filter = true;
+                            app.filter_input_mode = Some(crate::app::FilterInputMode::Text);
+                            app.filter_input.clear();
+                        }
+                    }
+                    KeyCode::Char('l') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.filter_input_mode = Some(crate::app::FilterInputMode::MinLevel);
+                            app.filter_input.clear();
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.filter_input_mode = Some(crate::app::FilterInputMode::AppId);
+                            app.filter_input.clear();
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.filter_input_mode = Some(crate::app::FilterInputMode::CtxId);
+                            app.filter_input.clear();
                         }
                     }
                     KeyCode::Enter => {
