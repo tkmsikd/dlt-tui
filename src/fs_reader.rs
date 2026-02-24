@@ -4,6 +4,8 @@ use std::path::Path;
 
 use std::io::{Cursor, Error, ErrorKind};
 
+const MAX_LOAD_SIZE: u64 = 500 * 1024 * 1024; // 500MB max per file
+
 pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
     let path_ref = path.as_ref();
     let file = File::open(path_ref)?;
@@ -16,15 +18,11 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
 
     match ext.as_str() {
         "gz" => {
-            // Let's do a quick read to validate the GZip header if we want to catch broken files early.
-            // But actually GzDecoder does check the header on new or first read.
-            // So we can just return it. To make `test_read_broken_compression_returns_err` pass,
-            // we should probably force a header read.
             let mut decoder = flate2::read::GzDecoder::new(file);
             let mut buf = [0; 0];
             #[allow(clippy::unused_io_amount)]
             decoder.read(&mut buf)?;
-            Ok(Box::new(decoder))
+            Ok(Box::new(decoder.take(MAX_LOAD_SIZE)))
         }
         "zip" => {
             let mut archive = zip::ZipArchive::new(file)?;
@@ -35,12 +33,12 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
                     "Zip file string is empty",
                 ));
             }
-            let mut zipped_file = archive.by_index(0)?;
+            let zipped_file = archive.by_index(0)?;
             let mut buffer = Vec::new();
-            zipped_file.read_to_end(&mut buffer)?;
+            zipped_file.take(MAX_LOAD_SIZE).read_to_end(&mut buffer)?;
             Ok(Box::new(Cursor::new(buffer)))
         }
-        _ => Ok(Box::new(file)),
+        _ => Ok(Box::new(file.take(MAX_LOAD_SIZE))),
     }
 }
 
