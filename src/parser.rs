@@ -31,20 +31,22 @@ pub enum ParseError {
 use nom::{
     IResult,
     bytes::complete::{tag, take},
-    number::complete::le_u16,
+    number::complete::{le_u16, le_u32},
 };
 
-fn parse_storage_header(input: &[u8]) -> IResult<&[u8], (&[u8], String)> {
-    let (input, magic) = tag("DLT\x01".as_bytes())(input)?;
-    let (input, _timestamp_sec) = take(4usize)(input)?;
-    let (input, _timestamp_us) = take(4usize)(input)?;
+fn parse_storage_header(input: &[u8]) -> IResult<&[u8], (u64, String)> {
+    let (input, _magic) = tag("DLT\x01".as_bytes())(input)?;
+    let (input, timestamp_sec) = le_u32(input)?;
+    let (input, timestamp_us) = le_u32(input)?;
     let (input, ecu_id_bytes) = take(4usize)(input)?;
 
     let ecu_id = String::from_utf8_lossy(ecu_id_bytes)
         .trim_end_matches('\0')
         .to_string();
 
-    Ok((input, (magic, ecu_id)))
+    let combined_us = (timestamp_sec as u64) * 1_000_000 + (timestamp_us as u64);
+
+    Ok((input, (combined_us, ecu_id)))
 }
 
 fn parse_standard_header(input: &[u8]) -> IResult<&[u8], (u8, u8, u16)> {
@@ -77,7 +79,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
 
     // 1. Storage Header (Optional, but MVP covers files with it)
     let storage_res = parse_storage_header(input);
-    let (input, (_, ecu_id)) = match storage_res {
+    let (input, (timestamp_us, ecu_id)) = match storage_res {
         Ok(res) => res,
         Err(nom::Err::Error(_e)) | Err(nom::Err::Failure(_e)) => {
             if input.starts_with(b"DLT") {
@@ -168,7 +170,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     Ok((
         input,
         DltMessage {
-            timestamp_us: 0, // Mocked for now, need parsing it from standard header if we want or use the unix timestamp
+            timestamp_us,
             ecu_id,
             apid: msg_apid,
             ctid: msg_ctid,

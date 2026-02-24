@@ -134,7 +134,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                 }
             } else {
                 match key.code {
-                    KeyCode::Char('q') => app.on_key_q(),
+                    KeyCode::Char('q') => match app.screen {
+                        AppScreen::Explorer => app.on_key_q(),
+                        AppScreen::LogViewer => app.screen = AppScreen::Explorer,
+                        AppScreen::LogDetail => app.screen = AppScreen::LogViewer,
+                    },
                     KeyCode::Char('j') | KeyCode::Down => app.on_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.on_up(),
                     KeyCode::Char('g') | KeyCode::Home => app.on_home(),

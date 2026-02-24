@@ -7,6 +7,15 @@ use ratatui::{
 
 use crate::app::{App, AppScreen};
 
+fn format_timestamp(us: u64) -> String {
+    let total_secs = us / 1_000_000;
+    let micros = us % 1_000_000;
+    let hours = (total_secs / 3600) % 24;
+    let minutes = (total_secs / 60) % 60;
+    let seconds = total_secs % 60;
+    format!("{:02}:{:02}:{:02}.{:06}", hours, minutes, seconds, micros)
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -67,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
                 let cells = vec![
                     ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
-                    ratatui::widgets::Cell::from(log.timestamp_us.to_string()),
+                    ratatui::widgets::Cell::from(format_timestamp(log.timestamp_us)),
                     ratatui::widgets::Cell::from(log.ecu_id.clone()),
                     ratatui::widgets::Cell::from(
                         log.apid.clone().unwrap_or_else(|| "-".to_string()),
@@ -83,7 +92,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             // Table widths: Level(5), Time(15), ECU(5), APP(5), CTX(5), Payload(Min(20))
             let widths = [
                 Constraint::Length(5),
-                Constraint::Length(15),
+                Constraint::Length(21),
                 Constraint::Length(5),
                 Constraint::Length(5),
                 Constraint::Length(5),
@@ -116,7 +125,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .split(chunks[0]);
 
                 let meta_text = format!(
-                    "Timestamp: {}\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    "Timestamp: {} ({} μs)\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    format_timestamp(log.timestamp_us),
                     log.timestamp_us,
                     log.ecu_id,
                     log.apid.as_deref().unwrap_or("-"),
