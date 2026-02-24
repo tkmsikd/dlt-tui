@@ -1,5 +1,8 @@
 # DLT-TUI Viewer
 
+[![Crates.io](https://img.shields.io/crates/v/dlt-tui.svg)](https://crates.io/crates/dlt-tui)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A fast, keyboard-centric terminal user interface (TUI) for viewing Automotive DLT (Diagnostic Log and Trace) files. Built with Rust and Ratatui.
 
 ## Features (v0.1.0 MVP)
@@ -16,6 +19,14 @@ A fast, keyboard-centric terminal user interface (TUI) for viewing Automotive DL
   - Context ID (`CTX`) filtering (`c` key)
 
 ## Installation
+
+### From crates.io
+
+```bash
+cargo install dlt-tui
+```
+
+### From source
 
 Ensure you have [Rust and Cargo installed](https://rustup.rs/). Then run:
 
@@ -42,7 +53,7 @@ cargo run -- /path/to/my_log.dlt.gz
 
 ## Keybindings
 
-### Global / File Explorer
+### File Explorer
 
 | Key          | Action                          |
 | ------------ | ------------------------------- |
@@ -55,17 +66,32 @@ cargo run -- /path/to/my_log.dlt.gz
 
 ### Log Viewer
 
-| Key   | Action                                                        |
-| ----- | ------------------------------------------------------------- |
-| `Esc` | Return back to File Explorer                                  |
-| `/`   | Open regex string search mode                                 |
-| `l`   | Open Minimum Log Level filter mode (Values: F, E, W, I, D, V) |
-| `a`   | Open APP ID filter mode                                       |
-| `c`   | Open CTX ID filter mode                                       |
+| Key     | Action                                                        |
+| ------- | ------------------------------------------------------------- |
+| `q`     | Return to File Explorer                                       |
+| `Esc`   | Return to File Explorer                                       |
+| `Enter` | Open Log Detail view for selected log                         |
+| `/`     | Open regex string search mode                                 |
+| `l`     | Open Minimum Log Level filter mode (Values: F, E, W, I, D, V) |
+| `a`     | Open APP ID filter mode                                       |
+| `c`     | Open CTX ID filter mode                                       |
+| `C`     | Clear all active filters                                      |
+
+### Log Detail
+
+| Key   | Action                              |
+| ----- | ----------------------------------- |
+| `q`   | Return to Log Viewer                |
+| `Esc` | Return to Log Viewer                |
+| `j/k` | Navigate to next/previous log entry |
 
 _(While in a filter input mode, type your filter query and press `Enter` to apply it, or `Esc` to cancel the filter mode and reset it. Pressing any key will dismiss any error popups.)_
 
 ## Future Roadmap
 
 The v0.1.0 release is the MVP marking the initial functional structure of `dlt-tui`.
-Further work will implement more sophisticated optimizations like async loading for massive files, advanced custom filtering, packet hex dumps, configuration saves, and more. See `docs/REQUIREMENTS.md` for more info.
+Further work will implement more sophisticated optimizations like async loading for massive files, advanced custom filtering, configuration saves, and more. See `docs/REQUIREMENTS.md` for more info.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

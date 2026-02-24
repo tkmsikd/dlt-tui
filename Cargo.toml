@@ -2,6 +2,15 @@
 name = "dlt-tui"
 version = "0.1.0"
 edition = "2024"
+authors = ["tkmsikd <tikeda1618@gmail.com>"]
+description = "A fast, keyboard-centric TUI viewer for Automotive DLT (Diagnostic Log and Trace) files"
+license = "MIT"
+repository = "https://github.com/tkmsikd/dlt-tui"
+homepage = "https://github.com/tkmsikd/dlt-tui"
+readme = "README.md"
+keywords = ["dlt", "tui", "automotive", "log-viewer", "diagnostics"]
+categories = ["command-line-utilities", "visualization"]
+exclude = ["sample.dlt", "tests/generate_sample_dlt.rs"]
 
 [dependencies]
 crossterm = "0.29.0"
