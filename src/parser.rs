@@ -159,13 +159,16 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     input = new_input;
 
     let raw_text = String::from_utf8_lossy(payload_bytes);
-    let payload_text = raw_text.chars().map(|c| {
-        if c.is_control() && c != '\n' && c != '\t' {
-            '.'
-        } else {
-            c
-        }
-    }).collect::<String>();
+    let payload_text = raw_text
+        .chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '.'
+            } else {
+                c
+            }
+        })
+        .collect::<String>();
 
     Ok((
         input,

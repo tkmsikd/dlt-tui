@@ -193,11 +193,23 @@ pub fn draw(f: &mut Frame, app: &App) {
             ),
             AppScreen::LogViewer => {
                 let mut actives = Vec::new();
-                if let Some(ref t) = app.filter.text { actives.push(format!("Text='{}'", t)); }
-                if let Some(ref t) = app.filter.app_id { actives.push(format!("APP='{}'", t)); }
-                if let Some(ref t) = app.filter.ctx_id { actives.push(format!("CTX='{}'", t)); }
-                if let Some(ref t) = app.filter.min_level { actives.push(format!("Level={:?}", t)); }
-                let filter_str = if actives.is_empty() { String::new() } else { format!("Filters: [{}] | ", actives.join(", ")) };
+                if let Some(ref t) = app.filter.text {
+                    actives.push(format!("Text='{}'", t));
+                }
+                if let Some(ref t) = app.filter.app_id {
+                    actives.push(format!("APP='{}'", t));
+                }
+                if let Some(ref t) = app.filter.ctx_id {
+                    actives.push(format!("CTX='{}'", t));
+                }
+                if let Some(ref t) = app.filter.min_level {
+                    actives.push(format!("Level={:?}", t));
+                }
+                let filter_str = if actives.is_empty() {
+                    String::new()
+                } else {
+                    format!("Filters: [{}] | ", actives.join(", "))
+                };
 
                 format!(
                     "Mode: Viewer | {}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (Esc) List",
@@ -206,7 +218,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     app.filtered_log_indices.len(),
                     app.logs.len()
                 )
-            },
+            }
             AppScreen::LogDetail => format!(
                 "Mode: Detail | Log {}/{} | (j/k) Scroll Logs | (Esc) Back to Viewer",
                 app.logs_selected_index + 1,

@@ -321,7 +321,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn build_mock_app_with_explorer_files() -> App {
-        let app = App {
+        App {
             screen: AppScreen::Explorer,
             explorer_items: vec![
                 FileEntry {
@@ -351,8 +351,7 @@ mod tests {
             should_quit: false,
             log_receiver: None,
             is_loading: false,
-        };
-        app
+        }
     }
 
     #[test]

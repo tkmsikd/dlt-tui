@@ -52,11 +52,11 @@ mod tests {
 
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].name, "file1.dlt");
-        assert_eq!(entries[0].is_dir, false);
+        assert!(!entries[0].is_dir);
         assert_eq!(entries[1].name, "file2.gz");
-        assert_eq!(entries[1].is_dir, false);
+        assert!(!entries[1].is_dir);
         assert_eq!(entries[2].name, "sub_dir");
-        assert_eq!(entries[2].is_dir, true);
+        assert!(entries[2].is_dir);
     }
 
     #[test]
