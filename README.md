@@ -35,6 +35,7 @@ Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over
   - `a` — Filter by APP ID
   - `c` — Filter by CTX ID
   - `C` — Clear all filters instantly
+- **Live TCP Connection** — Connect directly to a running dlt-daemon for real-time log streaming
 - **Compression Support** — Directly open `.gz` and `.zip` compressed DLT files
 - **Security Hardened** — Zip bomb protection (500MB limit), terminal injection sanitization
 
@@ -65,6 +66,13 @@ dlt-tui /path/to/log/directory/
 
 # Directly open a DLT file (also works with .gz and .zip)
 dlt-tui /path/to/ecu_recording.dlt.gz
+
+# Connect to a running dlt-daemon over TCP
+dlt-tui --connect localhost:3490
+
+# Typical ADB workflow for IVI development
+adb forward tcp:3490 tcp:3490
+dlt-tui --connect localhost:3490
 ```
 
 ## Keybindings
@@ -94,6 +102,7 @@ dlt-tui /path/to/ecu_recording.dlt.gz
 | `a`          | Filter by APP ID                  |
 | `c`          | Filter by CTX ID                  |
 | `C`          | Clear all filters                 |
+| `F`          | Toggle auto-scroll (tail mode)    |
 | `q` / `Esc`  | Back to File Explorer             |
 
 ### Log Detail
