@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Live TCP connection to dlt-daemon** — `--connect HOST:PORT` for real-time log streaming
+- **Auto-scroll (tail) mode** — `F` key to toggle following the latest log in real-time
+- **CLI argument parser** — `--connect` / `-c`, `--help` / `-h` flags
+- **TCP stream sync recovery** — automatic re-synchronization on corrupted or partial data
+- **GitHub Actions CI** — automated test, clippy, and format checks on every push/PR
+
+### Changed
+
+- Status bar now shows `[TCP: addr]` when connected and `[TAIL]` when auto-scroll is active
+
 ## [0.1.0] - 2026-02-25
 
 ### Added
