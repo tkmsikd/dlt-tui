@@ -1,6 +1,6 @@
 [package]
 name = "dlt-tui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["tkmsikd <tikeda1618@gmail.com>"]
 description = "A fast, keyboard-centric TUI viewer for Automotive DLT (Diagnostic Log and Trace) files"
