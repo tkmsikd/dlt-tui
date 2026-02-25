@@ -1,97 +1,167 @@
-# DLT-TUI Viewer
+# 🚗 dlt-tui
 
 [![Crates.io](https://img.shields.io/crates/v/dlt-tui.svg)](https://crates.io/crates/dlt-tui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A fast, keyboard-centric terminal user interface (TUI) for viewing Automotive DLT (Diagnostic Log and Trace) files. Built with Rust and Ratatui.
+**A fast, keyboard-centric terminal viewer for Automotive DLT (Diagnostic Log and Trace) files.**
 
-## Features (v0.1.0 MVP)
+> Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Perfect for ECU bring-up, test bench debugging, and CI pipeline log inspection.
 
-- **File Explorer**: Browse and navigate through files and directories natively within the application.
-- **Transparent Compression Support**: Automatically reads and decompresses `.dlt`, `.gz`, and `.zip` files containing DLT logs.
-- **TUI Viewer**: View parsed DLT messages in an organized table format based on `ratatui`.
-- **Syntax Highlighting**: Easily identify warnings and errors. Log rows are colored by Log Level (Fatal=Red, Error=Light Red, Warn=Yellow, Info=Green, Debug=Blue, Verbose=Gray).
-- **Vim-like Navigation**: Fast jumps to boundaries and typical `j/k` scrolling.
-- **Real-time Filtering**: Drill down logs instantly with multiple input modes:
-  - Text filtering (Regex supported) (`/` key)
-  - Minimum Log Level filtering (`l` key)
-  - Application ID (`APP`) filtering (`a` key)
-  - Context ID (`CTX`) filtering (`c` key)
+<p align="center">
+  <img src="assets/demo.png" alt="dlt-tui demo screenshot" width="700">
+</p>
 
-## Installation
+---
 
-### From crates.io
+## Why dlt-tui?
+
+| Pain Point                                | dlt-tui Solution                                                                   |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| 🖥️ dlt-viewer requires a desktop GUI      | ✅ Works in any terminal — SSH into test benches, CI runners, Docker containers    |
+| 🐌 Opening multi-GB DLT files is slow     | ✅ Async streaming parser — starts displaying logs before the file is fully loaded |
+| 🔍 Finding the right log is tedious       | ✅ Instant regex search + compound filters (Level × APP × CTX)                     |
+| 📦 Compressed logs need manual extraction | ✅ Transparently reads `.dlt`, `.dlt.gz`, and `.dlt.zip`                           |
+| ⌨️ Mouse-heavy workflows slow you down    | ✅ Vim-style navigation — your hands never leave the keyboard                      |
+
+## Features
+
+- **📂 Built-in File Explorer** — Browse directories and open files without leaving the TUI
+- **📊 Log Table View** — ECU ID, APP ID, CTX ID, Log Level, Timestamp, and Payload at a glance
+- **🔬 Log Detail & Hex Dump** — Inspect raw payload bytes for deep protocol analysis
+- **🎨 Color-coded Log Levels** — Fatal (red), Error (light red), Warn (yellow), Info (green), Debug (blue), Verbose (gray)
+- **⚡ Real-time Filtering** — Stack multiple filters to isolate exactly what you need:
+  - `/` — Regex text search across payloads
+  - `l` — Filter by minimum log level
+  - `a` — Filter by APP ID
+  - `c` — Filter by CTX ID
+  - `C` — Clear all filters instantly
+- **📦 Compression Support** — Directly open `.gz` and `.zip` compressed DLT files
+- **🔒 Security Hardened** — Zip bomb protection (500MB limit), terminal injection sanitization
+
+## Quick Start
+
+### Install from crates.io
 
 ```bash
 cargo install dlt-tui
 ```
 
-### From source
-
-Ensure you have [Rust and Cargo installed](https://rustup.rs/). Then run:
+### Or build from source
 
 ```bash
+git clone https://github.com/tkmsikd/dlt-tui.git
+cd dlt-tui
 cargo build --release
 ```
 
-The executable will be located in `target/release/dlt-tui`.
-
-## Usage
-
-You can launch the application with or without setting an initial path:
+### Run
 
 ```bash
-# Launch in current directory
-cargo run
+# Open file explorer in current directory
+dlt-tui
 
-# Launch in a specific directory
-cargo run -- /path/to/logs
+# Open a specific directory
+dlt-tui /path/to/log/directory/
 
-# Launch and directly open a specific DLT file (including .gz/.zip)
-cargo run -- /path/to/my_log.dlt.gz
+# Directly open a DLT file (also works with .gz and .zip)
+dlt-tui /path/to/ecu_recording.dlt.gz
 ```
 
 ## Keybindings
 
-### File Explorer
+### 📂 File Explorer
 
-| Key          | Action                          |
-| ------------ | ------------------------------- |
-| `q`          | Quit the application            |
-| `j` / `Down` | Move selection down             |
-| `k` / `Up`   | Move selection up               |
-| `g` / `Home` | Move to top of list             |
-| `G` / `End`  | Move to bottom of list          |
-| `Enter`      | Open directory or load log file |
+| Key          | Action                     |
+| ------------ | -------------------------- |
+| `j` / `↓`    | Move down                  |
+| `k` / `↑`    | Move up                    |
+| `g` / `Home` | Jump to top                |
+| `G` / `End`  | Jump to bottom             |
+| `Enter`      | Open directory / Load file |
+| `q`          | Quit                       |
 
-### Log Viewer
+### 📊 Log Viewer
 
-| Key     | Action                                                        |
-| ------- | ------------------------------------------------------------- |
-| `q`     | Return to File Explorer                                       |
-| `Esc`   | Return to File Explorer                                       |
-| `Enter` | Open Log Detail view for selected log                         |
-| `/`     | Open regex string search mode                                 |
-| `l`     | Open Minimum Log Level filter mode (Values: F, E, W, I, D, V) |
-| `a`     | Open APP ID filter mode                                       |
-| `c`     | Open CTX ID filter mode                                       |
-| `C`     | Clear all active filters                                      |
+| Key          | Action                            |
+| ------------ | --------------------------------- |
+| `j` / `↓`    | Scroll down                       |
+| `k` / `↑`    | Scroll up                         |
+| `g` / `Home` | Jump to first log                 |
+| `G` / `End`  | Jump to last log                  |
+| `Enter`      | Open detail view with hex dump    |
+| `/`          | Search text (regex supported)     |
+| `l`          | Filter by log level (F/E/W/I/D/V) |
+| `a`          | Filter by APP ID                  |
+| `c`          | Filter by CTX ID                  |
+| `C`          | Clear all filters                 |
+| `q` / `Esc`  | Back to File Explorer             |
 
-### Log Detail
+### 🔬 Log Detail
 
-| Key   | Action                              |
-| ----- | ----------------------------------- |
-| `q`   | Return to Log Viewer                |
-| `Esc` | Return to Log Viewer                |
-| `j/k` | Navigate to next/previous log entry |
+| Key         | Action                       |
+| ----------- | ---------------------------- |
+| `j` / `k`   | Navigate between log entries |
+| `q` / `Esc` | Back to Log Viewer           |
 
-_(While in a filter input mode, type your filter query and press `Enter` to apply it, or `Esc` to cancel the filter mode and reset it. Pressing any key will dismiss any error popups.)_
+> **Tip:** In any filter input mode, press `Enter` to apply or `Esc` to cancel and reset the filter.
 
-## Future Roadmap
+## Use Cases
 
-The v0.1.0 release is the MVP marking the initial functional structure of `dlt-tui`.
-Further work will implement more sophisticated optimizations like async loading for massive files, advanced custom filtering, configuration saves, and more. See `docs/REQUIREMENTS.md` for more info.
+### 🔧 ECU Bring-Up & Debugging
+
+SSH into your target hardware and inspect DLT logs on the spot — no need to copy files back to your workstation.
+
+```bash
+ssh ecu-bench "cat /var/log/dlt/*.dlt" > combined.dlt && dlt-tui combined.dlt
+```
+
+### 🏭 CI / Test Bench Pipeline
+
+Integrate log inspection into your CI pipeline. When a test fails, quickly triage the issue:
+
+```bash
+# In your CI failure handler
+dlt-tui ./test-results/ecu_log_$(date +%Y%m%d).dlt.gz
+```
+
+### 🔍 Quick Triage with Compound Filters
+
+Stack filters to isolate exactly what you need:
+
+1. Press `l` → type `W` → `Enter` (show warnings and above only)
+2. Press `a` → type `DIAG` → `Enter` (narrow to diagnostics module)
+3. Press `/` → type `CAN` → `Enter` (find CAN-related messages)
+4. Press `Enter` on a suspicious log → inspect hex dump
+
+## Roadmap
+
+- [ ] Page-up / Page-down scrolling
+- [ ] Horizontal scroll for long payloads
+- [ ] Bookmarking and log annotation
+- [ ] Saved filter configurations (`.dlt-tui.toml`)
+- [ ] Multi-file / directory batch loading
+- [ ] Timestamp delta display (Δt between messages)
+- [ ] DLT lifecycle and session tracking
+- [ ] Export filtered logs to file
+- [ ] Plugin system for custom decoders (SOME/IP, UDS, etc.)
+
+## Contributing
+
+Contributions are welcome! Whether it's bug reports, feature requests, or pull requests — all input from the automotive developer community is appreciated.
+
+```bash
+# Clone and run tests
+git clone https://github.com/tkmsikd/dlt-tui.git
+cd dlt-tui
+cargo test
+```
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+---
+
+<p align="center">
+  Built with 🦀 Rust and ❤️ for the automotive software community.
+</p>
