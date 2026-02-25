@@ -39,6 +39,8 @@ pub struct App {
     pub should_quit: bool,
     pub log_receiver: Option<std::sync::mpsc::Receiver<DltMessage>>,
     pub is_loading: bool,
+    pub connection_info: Option<String>,
+    pub auto_scroll: bool,
 }
 
 impl Default for App {
@@ -63,6 +65,8 @@ impl App {
             should_quit: false,
             log_receiver: None,
             is_loading: false,
+            connection_info: None,
+            auto_scroll: false,
         }
     }
 
@@ -249,19 +253,26 @@ impl App {
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         self.is_loading = false;
+                        if self.connection_info.is_some() {
+                            self.connection_info = None;
+                        }
                         self.log_receiver = None;
-                        break; // Channel closed, thread finished
+                        break;
                     }
                 }
             }
 
             if added {
-                // Determine matches incrementally to avoid full rescan
                 for idx in current_len..self.logs.len() {
                     let log = &self.logs[idx];
                     if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
                         self.filtered_log_indices.push(idx);
                     }
+                }
+
+                // Auto-scroll: keep cursor at the end when in tail mode
+                if self.auto_scroll && !self.filtered_log_indices.is_empty() {
+                    self.logs_selected_index = self.filtered_log_indices.len() - 1;
                 }
             }
         }
@@ -313,6 +324,28 @@ impl App {
     pub fn on_key_q(&mut self) {
         self.should_quit = true;
     }
+
+    pub fn connect_tcp(&mut self, addr: &str) {
+        self.logs.clear();
+        self.filtered_log_indices.clear();
+        self.logs_selected_index = 0;
+        self.filter = Filter::default();
+        self.is_loading = true;
+        self.auto_scroll = true;
+        self.connection_info = Some(addr.to_string());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.log_receiver = Some(rx);
+
+        let addr_owned = addr.to_string();
+        std::thread::spawn(move || {
+            if let Err(_e) = crate::tcp_client::stream_from_tcp(&addr_owned, tx) {
+                // Connection failed — channel will be dropped, on_tick handles it
+            }
+        });
+
+        self.screen = AppScreen::LogViewer;
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +384,8 @@ mod tests {
             should_quit: false,
             log_receiver: None,
             is_loading: false,
+            connection_info: None,
+            auto_scroll: false,
         }
     }
 

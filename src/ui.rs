@@ -211,9 +211,20 @@ pub fn draw(f: &mut Frame, app: &App) {
                     format!("Filters: [{}] | ", actives.join(", "))
                 };
 
+                let conn_str = if let Some(ref addr) = app.connection_info {
+                    format!("[TCP: {}] ", addr)
+                } else if app.is_loading {
+                    "[LOADING...] ".to_string()
+                } else {
+                    String::new()
+                };
+
+                let tail_str = if app.auto_scroll { "[TAIL] " } else { "" };
+
                 format!(
-                    "Mode: Viewer | {}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (Esc) List",
-                    if app.is_loading { "[LOADING...] " } else { "" },
+                    "Mode: Viewer | {}{}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (F) Tail",
+                    conn_str,
+                    tail_str,
                     filter_str,
                     app.filtered_log_indices.len(),
                     app.logs.len()

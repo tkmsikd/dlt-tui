@@ -12,6 +12,7 @@ pub mod app;
 pub mod explorer;
 pub mod fs_reader;
 pub mod parser;
+pub mod tcp_client;
 pub mod ui;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,28 +26,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create app and run it
     let mut app = App::new();
 
-    // determine init path
+    // Parse arguments
     let args: Vec<String> = env::args().collect();
-    let init_path = if args.len() > 1 {
-        PathBuf::from(&args[1])
-    } else {
-        env::current_dir()?
-    };
+    let mut connect_addr: Option<String> = None;
+    let mut file_path: Option<PathBuf> = None;
 
-    if init_path.is_dir() {
-        if let Err(e) = app.load_directory(&init_path) {
-            app.error_message = Some(format!("Could not load directory: {}", e));
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--connect" | "-c" => {
+                i += 1;
+                if i < args.len() {
+                    connect_addr = Some(args[i].clone());
+                } else {
+                    eprintln!("Error: --connect requires an address (e.g., localhost:3490)");
+                    std::process::exit(1);
+                }
+            }
+            "--help" | "-h" => {
+                println!("dlt-tui - A fast TUI viewer for Automotive DLT logs");
+                println!();
+                println!("USAGE:");
+                println!("    dlt-tui [OPTIONS] [PATH]");
+                println!();
+                println!("ARGS:");
+                println!("    [PATH]    File or directory to open");
+                println!();
+                println!("OPTIONS:");
+                println!("    -c, --connect <HOST:PORT>    Connect to a dlt-daemon TCP socket");
+                println!("    -h, --help                   Print help information");
+                std::process::exit(0);
+            }
+            other => {
+                file_path = Some(PathBuf::from(other));
+            }
         }
+        i += 1;
+    }
+
+    if let Some(addr) = connect_addr {
+        app.connect_tcp(&addr);
     } else {
-        // If passed a file, attempt to load it right away
-        let parent = init_path.parent().unwrap_or(&init_path);
-        if let Err(e) = app.load_directory(parent) {
-            app.error_message = Some(format!("Could not load directory: {}", e));
-        }
-        if app.error_message.is_none()
-            && let Err(e) = app.load_file(&init_path)
-        {
-            app.error_message = Some(format!("Could not load file: {}", e));
+        let init_path = file_path.unwrap_or_else(|| env::current_dir().unwrap_or_default());
+
+        if init_path.is_dir() {
+            if let Err(e) = app.load_directory(&init_path) {
+                app.error_message = Some(format!("Could not load directory: {}", e));
+            }
+        } else {
+            let parent = init_path.parent().unwrap_or(&init_path);
+            if let Err(e) = app.load_directory(parent) {
+                app.error_message = Some(format!("Could not load directory: {}", e));
+            }
+            if app.error_message.is_none()
+                && let Err(e) = app.load_file(&init_path)
+            {
+                app.error_message = Some(format!("Could not load file: {}", e));
+            }
         }
     }
 
@@ -171,6 +207,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                         if app.screen == AppScreen::LogViewer {
                             app.filter = crate::app::Filter::default();
                             app.apply_filter();
+                        }
+                    }
+                    KeyCode::Char('F') => {
+                        if app.screen == AppScreen::LogViewer {
+                            app.auto_scroll = !app.auto_scroll;
                         }
                     }
                     KeyCode::Enter => {
