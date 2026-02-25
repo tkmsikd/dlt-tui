@@ -94,9 +94,10 @@ mod tests {
         msg.push(0x21); // HTYP: UEH=1, VERS=1
         msg.push(0x00); // MCNT
         let total_len: u16 = 4 + 10 + payload.len() as u16;
-        msg.extend_from_slice(&total_len.to_le_bytes());
+        msg.extend_from_slice(&total_len.to_be_bytes()); // BIG ENDIAN per spec
         // Extended Header (10 bytes)
-        msg.push(0x20); // MSIN: Log Info
+        // MSIN: verbose=0, MSTP=0(Log), MTIN=4(Info) => (4 << 4) = 0x40
+        msg.push(0x40);
         msg.push(1); // NOAR
         msg.extend_from_slice(b"APP1");
         msg.extend_from_slice(b"CTX1");

@@ -14,7 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI argument parser** — `--connect` / `-c`, `--help` / `-h` flags
 - **TCP stream sync recovery** — automatic re-synchronization on corrupted or partial data
 - **File parser error recovery** — `parse_all_messages` scans for next valid DLT marker on parse errors instead of stopping, recovering all valid messages from corrupted files
+- **Verbose payload decoder** — DLT verbose mode TLV arguments (string, uint, sint, float, raw) are now decoded into human-readable text instead of showing garbled binary
 - **GitHub Actions CI** — automated test, clippy, and format checks on every push/PR
+
+### Fixed
+
+- **Standard Header LEN byte order** — Fixed from little-endian to big-endian per AUTOSAR DLT specification; real-world DLT files now parse correctly
+- **WEID/WSID/WTMS optional header fields** — ECU ID, Session ID, and Timestamp fields in the standard header are now properly consumed instead of being misinterpreted as payload
+- **MSIN bit interpretation** — Fixed to spec: bit 0 = verbose flag, bits 1-3 = MSTP, bits 4-7 = MTIN (was incorrectly treating bit 0 as part of message type)
 
 ### Changed
 

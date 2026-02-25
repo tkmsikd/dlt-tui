@@ -24,11 +24,11 @@ fn build_dlt_message(ecu: &str, apid: &str, ctid: &str, log_level: u8, payload: 
 
     let payload_bytes = payload.as_bytes();
     let total_len: u16 = 4 + 10 + payload_bytes.len() as u16; // StdHdr + ExtHdr + Payload
-    msg.extend_from_slice(&total_len.to_le_bytes());
+    msg.extend_from_slice(&total_len.to_be_bytes()); // BIG ENDIAN per DLT spec
 
     // 3. Extended Header (10 bytes)
-    // MSIN: Message Type = 0 (Log), log_level shifted left by 3
-    let msin = log_level << 3;
+    // MSIN: bit 0 = verbose (0), bits 1-3 = MSTP (0=Log), bits 4-7 = MTIN (log level)
+    let msin = log_level << 4;
     msg.push(msin);
     msg.push(1); // NOAR
 
