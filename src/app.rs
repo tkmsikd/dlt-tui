@@ -1,6 +1,8 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
@@ -41,6 +43,8 @@ pub struct App {
     pub is_loading: bool,
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
+    pub skipped_bytes: usize,
+    skipped_bytes_shared: Option<Arc<AtomicUsize>>,
 }
 
 impl Default for App {
@@ -67,6 +71,8 @@ impl App {
             is_loading: false,
             connection_info: None,
             auto_scroll: false,
+            skipped_bytes: 0,
+            skipped_bytes_shared: None,
         }
     }
 
@@ -99,29 +105,30 @@ impl App {
         self.logs_selected_index = 0;
         self.filter = Filter::default();
         self.is_loading = true;
+        self.skipped_bytes = 0;
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.log_receiver = Some(rx);
+
+        let skipped_shared = Arc::new(AtomicUsize::new(0));
+        self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
         let path_buf = path.to_path_buf();
         std::thread::spawn(move || {
             let mut stream = match crate::fs_reader::open_dlt_stream(&path_buf) {
                 Ok(s) => s,
-                Err(_) => return, // Ignore for now
+                Err(_) => return,
             };
             let mut buffer = Vec::new();
             if std::io::Read::read_to_end(&mut stream, &mut buffer).is_err() {
                 return;
             }
 
-            let mut input = buffer.as_slice();
-            while !input.is_empty() {
-                match crate::parser::parse_dlt_message(input) {
-                    Ok((remaining, msg)) => {
-                        let _ = tx.send(msg);
-                        input = remaining;
-                    }
-                    Err(_) => break,
+            let (messages, skipped) = crate::parser::parse_all_messages(&buffer);
+            skipped_shared.store(skipped, Ordering::Relaxed);
+            for msg in messages {
+                if tx.send(msg).is_err() {
+                    break; // Receiver dropped (app quit)
                 }
             }
         });
@@ -256,6 +263,11 @@ impl App {
                         if self.connection_info.is_some() {
                             self.connection_info = None;
                         }
+                        // Read skipped bytes from the shared atomic
+                        if let Some(ref shared) = self.skipped_bytes_shared {
+                            self.skipped_bytes = shared.load(Ordering::Relaxed);
+                        }
+                        self.skipped_bytes_shared = None;
                         self.log_receiver = None;
                         break;
                     }
@@ -386,6 +398,8 @@ mod tests {
             is_loading: false,
             connection_info: None,
             auto_scroll: false,
+            skipped_bytes: 0,
+            skipped_bytes_shared: None,
         }
     }
 

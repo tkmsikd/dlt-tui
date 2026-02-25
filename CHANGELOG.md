@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto-scroll (tail) mode** — `F` key to toggle following the latest log in real-time
 - **CLI argument parser** — `--connect` / `-c`, `--help` / `-h` flags
 - **TCP stream sync recovery** — automatic re-synchronization on corrupted or partial data
+- **File parser error recovery** — `parse_all_messages` scans for next valid DLT marker on parse errors instead of stopping, recovering all valid messages from corrupted files
 - **GitHub Actions CI** — automated test, clippy, and format checks on every push/PR
 
 ### Changed
 
 - Status bar now shows `[TCP: addr]` when connected and `[TAIL]` when auto-scroll is active
+- Status bar shows `[RECOVERED: N bytes skipped]` when file parsing encountered and recovered from corrupted data
+- Shared `find_next_sync` logic between TCP client and file parser (DRY refactor)
 
 ## [0.1.0] - 2026-02-25
 

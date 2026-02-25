@@ -58,7 +58,7 @@ pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io:
                 | Err(parser::ParseError::InvalidHeader)
                 | Err(parser::ParseError::Unknown) => {
                     // Try to find next DLT marker or skip one byte
-                    if let Some(pos) = find_next_sync(&remaining[1..]) {
+                    if let Some(pos) = parser::find_next_sync(&remaining[1..]) {
                         consumed += 1 + pos;
                     } else {
                         consumed += remaining.len().saturating_sub(3);
@@ -75,28 +75,6 @@ pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io:
     }
 
     Ok(())
-}
-
-/// Find the next potential DLT message start.
-/// Looks for "DLT\x01" (storage header magic) or a valid-looking standard header.
-fn find_next_sync(data: &[u8]) -> Option<usize> {
-    for i in 0..data.len() {
-        // Storage header magic
-        if data[i..].starts_with(b"DLT\x01") {
-            return Some(i);
-        }
-        // Standard header heuristic: version bits in HTYP should be 0x01 (version 1)
-        // HTYP byte: bits 5-7 = version. Version 1 => (htyp >> 5) & 0x07 == 1
-        if i + 4 <= data.len() {
-            let htyp = data[i];
-            let version = (htyp >> 5) & 0x07;
-            if version == 1 {
-                // Could be a valid standard header start
-                return Some(i);
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

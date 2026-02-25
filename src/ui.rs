@@ -221,10 +221,17 @@ pub fn draw(f: &mut Frame, app: &App) {
 
                 let tail_str = if app.auto_scroll { "[TAIL] " } else { "" };
 
+                let recovered_str = if app.skipped_bytes > 0 {
+                    format!("[RECOVERED: {} bytes skipped] ", app.skipped_bytes)
+                } else {
+                    String::new()
+                };
+
                 format!(
-                    "Mode: Viewer | {}{}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (F) Tail",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (F) Tail",
                     conn_str,
                     tail_str,
+                    recovered_str,
                     filter_str,
                     app.filtered_log_indices.len(),
                     app.logs.len()
