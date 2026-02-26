@@ -171,4 +171,57 @@ mod tests {
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 0);
     }
+
+    #[test]
+    fn test_stream_with_interleaved_garbage() {
+        let mut data = Vec::new();
+        data.extend(build_dlt_message_with_storage_header(b"Msg1"));
+        data.extend_from_slice(b"\xFF\xFE\xFD\xFC\xFB"); // garbage
+        data.extend(build_dlt_message_with_storage_header(b"Msg2"));
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(cursor, tx).unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].payload_text, "Msg1");
+        assert_eq!(msgs[1].payload_text, "Msg2");
+    }
+
+    #[test]
+    fn test_stream_truncated_message() {
+        // Build a valid message then truncate the last few bytes
+        let full = build_dlt_message_with_storage_header(b"Complete");
+        let truncated = &full[..full.len() - 3]; // cut off end
+
+        let cursor = Cursor::new(truncated.to_vec());
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(cursor, tx).unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(msgs.len(), 0); // can't parse truncated message
+    }
+
+    #[test]
+    fn test_stream_receiver_dropped() {
+        let mut data = Vec::new();
+        for i in 0..100 {
+            data.extend(build_dlt_message_with_storage_header(
+                format!("Msg{}", i).as_bytes(),
+            ));
+        }
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        // Drop the receiver immediately — sender should handle gracefully
+        drop(rx);
+
+        // stream_from_reader should return Ok, not panic
+        let result = stream_from_reader(cursor, tx);
+        assert!(result.is_ok());
+    }
 }

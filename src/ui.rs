@@ -267,8 +267,22 @@ pub fn draw(f: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::explorer::FileEntry;
+    use crate::parser::DltMessage;
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
+
+    /// Extract all text from a TestBackend buffer as a single string
+    fn buffer_to_string(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                text.push_str(cell.symbol());
+            }
+        }
+        text
+    }
 
     #[test]
     fn test_draw_explorer_screen() {
@@ -280,32 +294,99 @@ mod tests {
             path: PathBuf::from("test_file.dlt"),
         });
 
-        let backend = TestBackend::new(80, 24);
+        let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-
         terminal.draw(|f| draw(f, &app)).unwrap();
 
-        // Check if the output contains the file name
-        let buffer = terminal.backend().buffer();
-        // The file name should be visible somewhere
-        let content = buffer.content(); // A slice of cells
-        let _has_text = content
-            .iter()
-            .any(|cell| cell.symbol() == "t" || cell.symbol() == "test_file.dlt");
-
-        // This is a naive assertion. TestBackend provides more precise cell checks,
-        // but for MVP TDD, checking that it renders something without panicking is a good start.
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("File Explorer"), "Should show 'File Explorer' title");
+        assert!(text.contains("test_file.dlt"), "Should show the file name");
+        assert!(text.contains("Mode: Explorer"), "Should show Explorer mode in status bar");
     }
 
     #[test]
     fn test_draw_log_viewer_screen() {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
+        app.logs.push(DltMessage {
+            timestamp_us: 1_640_995_200_000_000,
+            ecu_id: "ECU1".to_string(),
+            apid: Some("DIAG".to_string()),
+            ctid: Some("CAN1".to_string()),
+            log_level: Some(crate::parser::LogLevel::Error),
+            payload_text: "CAN bus timeout".to_string(),
+            payload_raw: b"CAN bus timeout".to_vec(),
+        });
+        app.apply_filter();
 
-        let backend = TestBackend::new(80, 24);
+        let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-
         terminal.draw(|f| draw(f, &app)).unwrap();
-        // Checks that Log Viewer does not panic and renders.
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("Log Viewer"), "Should show 'Log Viewer' title");
+        assert!(text.contains("Level"), "Should show column header");
+        assert!(text.contains("Payload"), "Should show Payload column");
+        assert!(text.contains("ECU1"), "Should show ECU ID");
+        assert!(text.contains("DIAG"), "Should show APP ID");
+        assert!(text.contains("CAN bus timeout"), "Should show payload text");
+        assert!(text.contains("Logs: 1/1"), "Should show log count");
+    }
+
+    #[test]
+    fn test_draw_log_detail_screen() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogDetail;
+        app.logs.push(DltMessage {
+            timestamp_us: 5_000_000,
+            ecu_id: "ECU2".to_string(),
+            apid: Some("NAV".to_string()),
+            ctid: Some("GPS1".to_string()),
+            log_level: Some(crate::parser::LogLevel::Info),
+            payload_text: "GPS fix acquired".to_string(),
+            payload_raw: b"GPS fix acquired".to_vec(),
+        });
+        app.apply_filter();
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("Log Metadata"), "Should show metadata section");
+        assert!(text.contains("Hex Dump"), "Should show hex dump section");
+        assert!(text.contains("ECU2"), "Should show ECU ID in detail");
+        assert!(text.contains("GPS fix acquired"), "Should show payload text");
+    }
+
+    #[test]
+    fn test_draw_error_message() {
+        let mut app = App::new();
+        app.screen = AppScreen::Explorer;
+        app.error_message = Some("File not found".to_string());
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("ERROR"), "Should show ERROR prefix");
+        assert!(text.contains("File not found"), "Should show error message");
+    }
+
+    #[test]
+    fn test_draw_filter_input_mode() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.filter_input_mode = Some(crate::app::FilterInputMode::Text);
+        app.filter_input = "CAN".to_string();
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("Search Text"), "Should show search prompt");
+        assert!(text.contains("CAN"), "Should show current input text");
     }
 }
