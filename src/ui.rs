@@ -188,7 +188,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         let mut string = match app.screen {
             AppScreen::Explorer => format!(
-                "Mode: Explorer | Files: {} | (j/k) Move | (Enter) Open | (q) Quit",
+                "Mode: Explorer | Files: {} | (j/k) Move | (^f/^b) Page | (Enter) Open | (q) Quit",
                 app.explorer_items.len()
             ),
             AppScreen::LogViewer => {
@@ -228,7 +228,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (F) Tail",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear",
                     conn_str,
                     tail_str,
                     recovered_str,

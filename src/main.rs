@@ -109,6 +109,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
+        // Compute page size from terminal height (total - borders(2) - header(2) - status(3))
+        let page_size = terminal.size()?.height.saturating_sub(7) as usize;
+
         if crossterm::event::poll(tick_rate)?
             && let Event::Key(key) = event::read()?
         {
@@ -179,6 +182,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
                     KeyCode::Char('k') | KeyCode::Up => app.on_up(),
                     KeyCode::Char('g') | KeyCode::Home => app.on_home(),
                     KeyCode::Char('G') | KeyCode::End => app.on_end(),
+                    // Page scrolling
+                    KeyCode::Char('f') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        app.on_page_down(page_size);
+                    }
+                    KeyCode::PageDown => app.on_page_down(page_size),
+                    KeyCode::Char('b') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        app.on_page_up(page_size);
+                    }
+                    KeyCode::PageUp => app.on_page_up(page_size),
+                    KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        app.on_half_page_down(page_size);
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        app.on_half_page_up(page_size);
+                    }
                     KeyCode::Char('/') => {
                         if app.screen == AppScreen::LogViewer {
                             app.filter_input_mode = Some(crate::app::FilterInputMode::Text);

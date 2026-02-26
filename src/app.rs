@@ -324,6 +324,54 @@ impl App {
         }
     }
 
+    /// Move selection down by `page_size` rows (full page scroll)
+    pub fn on_page_down(&mut self, page_size: usize) {
+        if page_size == 0 {
+            return;
+        }
+        match self.screen {
+            AppScreen::Explorer => {
+                if !self.explorer_items.is_empty() {
+                    let max = self.explorer_items.len() - 1;
+                    self.explorer_selected_index =
+                        (self.explorer_selected_index + page_size).min(max);
+                }
+            }
+            AppScreen::LogViewer | AppScreen::LogDetail => {
+                if !self.filtered_log_indices.is_empty() {
+                    let max = self.filtered_log_indices.len() - 1;
+                    self.logs_selected_index = (self.logs_selected_index + page_size).min(max);
+                }
+            }
+        }
+    }
+
+    /// Move selection up by `page_size` rows (full page scroll)
+    pub fn on_page_up(&mut self, page_size: usize) {
+        if page_size == 0 {
+            return;
+        }
+        match self.screen {
+            AppScreen::Explorer => {
+                self.explorer_selected_index =
+                    self.explorer_selected_index.saturating_sub(page_size);
+            }
+            AppScreen::LogViewer | AppScreen::LogDetail => {
+                self.logs_selected_index = self.logs_selected_index.saturating_sub(page_size);
+            }
+        }
+    }
+
+    /// Move selection down by half a page
+    pub fn on_half_page_down(&mut self, page_size: usize) {
+        self.on_page_down(page_size / 2);
+    }
+
+    /// Move selection up by half a page
+    pub fn on_half_page_up(&mut self, page_size: usize) {
+        self.on_page_up(page_size / 2);
+    }
+
     pub fn on_enter(&mut self) {
         // For MVP, just flip state for now
         match self.screen {
@@ -403,6 +451,24 @@ mod tests {
         }
     }
 
+    fn build_mock_app_with_logs(count: usize) -> App {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..count {
+            app.logs.push(DltMessage {
+                timestamp_us: 1000 + i as u64,
+                ecu_id: format!("ECU{}", i),
+                apid: None,
+                ctid: None,
+                log_level: None,
+                payload_text: format!("Log message {}", i),
+                payload_raw: format!("Log message {}", i).into_bytes(),
+            });
+        }
+        app.apply_filter();
+        app
+    }
+
     #[test]
     fn test_app_initialization() {
         let app = App::new();
@@ -445,23 +511,7 @@ mod tests {
 
     #[test]
     fn test_log_viewer_up_down_bounds() {
-        let mut app = App::new();
-        app.screen = AppScreen::LogViewer;
-
-        // Let's populate mock DltMessages
-        for i in 0..5 {
-            app.logs.push(DltMessage {
-                timestamp_us: 1000 + i,
-                ecu_id: format!("ECU{}", i),
-                apid: None,
-                ctid: None,
-                log_level: None,
-                payload_text: "Mock Payload".to_string(),
-                payload_raw: b"Mock Payload".to_vec(),
-            });
-        }
-
-        app.apply_filter();
+        let mut app = build_mock_app_with_logs(5);
 
         // Test list traversal for logs
         app.on_up();
@@ -483,5 +533,107 @@ mod tests {
 
         app.on_end();
         assert_eq!(app.logs_selected_index, 4);
+    }
+
+    // ==================== Page scrolling tests ====================
+
+    #[test]
+    fn test_page_down_log_viewer() {
+        let mut app = build_mock_app_with_logs(100);
+        assert_eq!(app.logs_selected_index, 0);
+
+        // Full page down
+        app.on_page_down(20);
+        assert_eq!(app.logs_selected_index, 20);
+
+        // Another page
+        app.on_page_down(20);
+        assert_eq!(app.logs_selected_index, 40);
+    }
+
+    #[test]
+    fn test_page_down_clamps_at_end() {
+        let mut app = build_mock_app_with_logs(50);
+        app.logs_selected_index = 45;
+
+        // Page down should clamp to last item (index 49)
+        app.on_page_down(20);
+        assert_eq!(app.logs_selected_index, 49);
+    }
+
+    #[test]
+    fn test_page_up_log_viewer() {
+        let mut app = build_mock_app_with_logs(100);
+        app.logs_selected_index = 50;
+
+        app.on_page_up(20);
+        assert_eq!(app.logs_selected_index, 30);
+
+        app.on_page_up(20);
+        assert_eq!(app.logs_selected_index, 10);
+    }
+
+    #[test]
+    fn test_page_up_clamps_at_start() {
+        let mut app = build_mock_app_with_logs(100);
+        app.logs_selected_index = 5;
+
+        // Page up should clamp to 0
+        app.on_page_up(20);
+        assert_eq!(app.logs_selected_index, 0);
+    }
+
+    #[test]
+    fn test_half_page_scroll() {
+        let mut app = build_mock_app_with_logs(100);
+
+        app.on_half_page_down(20); // 20/2 = 10
+        assert_eq!(app.logs_selected_index, 10);
+
+        app.on_half_page_down(20);
+        assert_eq!(app.logs_selected_index, 20);
+
+        app.on_half_page_up(20);
+        assert_eq!(app.logs_selected_index, 10);
+
+        app.on_half_page_up(20);
+        assert_eq!(app.logs_selected_index, 0);
+    }
+
+    #[test]
+    fn test_page_scroll_explorer() {
+        let mut app = build_mock_app_with_explorer_files();
+        // Explorer has 3 items (indices 0, 1, 2)
+
+        app.on_page_down(10);
+        assert_eq!(app.explorer_selected_index, 2); // clamped
+
+        app.on_page_up(10);
+        assert_eq!(app.explorer_selected_index, 0); // clamped
+    }
+
+    #[test]
+    fn test_page_scroll_empty_list() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        // No logs
+
+        app.on_page_down(20);
+        assert_eq!(app.logs_selected_index, 0);
+
+        app.on_page_up(20);
+        assert_eq!(app.logs_selected_index, 0);
+    }
+
+    #[test]
+    fn test_page_scroll_zero_page_size() {
+        let mut app = build_mock_app_with_logs(10);
+        app.logs_selected_index = 5;
+
+        app.on_page_down(0);
+        assert_eq!(app.logs_selected_index, 5); // unchanged
+
+        app.on_page_up(0);
+        assert_eq!(app.logs_selected_index, 5); // unchanged
     }
 }

@@ -79,31 +79,39 @@ dlt-tui --connect localhost:3490
 
 ### File Explorer
 
-| Key          | Action                     |
-| ------------ | -------------------------- |
-| `j` / `Down` | Move down                  |
-| `k` / `Up`   | Move up                    |
-| `g` / `Home` | Jump to top                |
-| `G` / `End`  | Jump to bottom             |
-| `Enter`      | Open directory / Load file |
-| `q`          | Quit                       |
+| Key                    | Action                     |
+| ---------------------- | -------------------------- |
+| `j` / `Down`           | Move down                  |
+| `k` / `Up`             | Move up                    |
+| `Ctrl+f` / `Page Down` | Page down                  |
+| `Ctrl+b` / `Page Up`   | Page up                    |
+| `Ctrl+d`               | Half page down             |
+| `Ctrl+u`               | Half page up               |
+| `g` / `Home`           | Jump to top                |
+| `G` / `End`            | Jump to bottom             |
+| `Enter`                | Open directory / Load file |
+| `q`                    | Quit                       |
 
 ### Log Viewer
 
-| Key          | Action                            |
-| ------------ | --------------------------------- |
-| `j` / `Down` | Scroll down                       |
-| `k` / `Up`   | Scroll up                         |
-| `g` / `Home` | Jump to first log                 |
-| `G` / `End`  | Jump to last log                  |
-| `Enter`      | Open detail view with hex dump    |
-| `/`          | Search text (regex supported)     |
-| `l`          | Filter by log level (F/E/W/I/D/V) |
-| `a`          | Filter by APP ID                  |
-| `c`          | Filter by CTX ID                  |
-| `C`          | Clear all filters                 |
-| `F`          | Toggle auto-scroll (tail mode)    |
-| `q` / `Esc`  | Back to File Explorer             |
+| Key                    | Action                            |
+| ---------------------- | --------------------------------- |
+| `j` / `Down`           | Scroll down                       |
+| `k` / `Up`             | Scroll up                         |
+| `Ctrl+f` / `Page Down` | Page down                         |
+| `Ctrl+b` / `Page Up`   | Page up                           |
+| `Ctrl+d`               | Half page down                    |
+| `Ctrl+u`               | Half page up                      |
+| `g` / `Home`           | Jump to first log                 |
+| `G` / `End`            | Jump to last log                  |
+| `Enter`                | Open detail view with hex dump    |
+| `/`                    | Search text (regex supported)     |
+| `l`                    | Filter by log level (F/E/W/I/D/V) |
+| `a`                    | Filter by APP ID                  |
+| `c`                    | Filter by CTX ID                  |
+| `C`                    | Clear all filters                 |
+| `F`                    | Toggle auto-scroll (tail mode)    |
+| `q` / `Esc`            | Back to File Explorer             |
 
 ### Log Detail
 
