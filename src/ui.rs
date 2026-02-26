@@ -77,14 +77,14 @@ pub fn draw(f: &mut Frame, app: &App) {
                 let cells = vec![
                     ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
                     ratatui::widgets::Cell::from(format_timestamp(log.timestamp_us)),
-                    ratatui::widgets::Cell::from(log.ecu_id.clone()),
+                    ratatui::widgets::Cell::from(log.ecu_id.as_str()),
                     ratatui::widgets::Cell::from(
-                        log.apid.clone().unwrap_or_else(|| "-".to_string()),
+                        log.apid.as_deref().unwrap_or("-"),
                     ),
                     ratatui::widgets::Cell::from(
-                        log.ctid.clone().unwrap_or_else(|| "-".to_string()),
+                        log.ctid.as_deref().unwrap_or("-"),
                     ),
-                    ratatui::widgets::Cell::from(log.payload_text.clone()),
+                    ratatui::widgets::Cell::from(log.payload_text.as_str()),
                 ];
                 ratatui::widgets::Row::new(cells).height(1)
             });
