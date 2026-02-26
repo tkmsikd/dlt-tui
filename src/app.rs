@@ -79,7 +79,10 @@ impl App {
     pub fn load_directory(&mut self, path: &Path) -> std::io::Result<()> {
         let mut entries = explorer::list_directory(path)?;
 
-        // Add ".." parent directory option if it has a parent
+        // Sort first: directories first, then alphabetically by name
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+
+        // Insert ".." AFTER sorting so it always stays at position 0
         if let Some(parent) = path.parent() {
             entries.insert(
                 0,
@@ -90,9 +93,6 @@ impl App {
                 },
             );
         }
-
-        // sort by is_dir (directories first), then by name
-        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
 
         self.explorer_items = entries;
         self.explorer_selected_index = 0;
@@ -635,5 +635,152 @@ mod tests {
 
         app.on_page_up(0);
         assert_eq!(app.logs_selected_index, 5); // unchanged
+    }
+
+    // ==================== Filter scenario tests ====================
+
+    fn build_mock_app_with_diverse_logs() -> App {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+
+        let entries = vec![
+            ("ECU1", Some("DIAG"), Some("CAN1"), Some(crate::parser::LogLevel::Error), "CAN bus timeout on channel 1"),
+            ("ECU1", Some("DIAG"), Some("CAN2"), Some(crate::parser::LogLevel::Warn), "CAN retransmit count high"),
+            ("ECU1", Some("SYS"), Some("BOOT"), Some(crate::parser::LogLevel::Info), "System boot complete"),
+            ("ECU2", Some("NAV"), Some("GPS1"), Some(crate::parser::LogLevel::Debug), "GPS fix acquired lat=35.6 lon=139.7"),
+            ("ECU2", Some("NAV"), Some("MAP1"), Some(crate::parser::LogLevel::Info), "Map data loaded"),
+            ("ECU1", Some("SYS"), Some("BOOT"), Some(crate::parser::LogLevel::Fatal), "Watchdog reset detected"),
+            ("ECU1", Some("DIAG"), Some("UDS1"), Some(crate::parser::LogLevel::Info), "UDS session started"),
+            ("ECU2", Some("HMI"), Some("DISP"), Some(crate::parser::LogLevel::Verbose), "Frame rendered in 16ms"),
+        ];
+
+        for (i, (ecu, apid, ctid, level, text)) in entries.into_iter().enumerate() {
+            app.logs.push(DltMessage {
+                timestamp_us: 1000 + i as u64,
+                ecu_id: ecu.to_string(),
+                apid: apid.map(|s| s.to_string()),
+                ctid: ctid.map(|s| s.to_string()),
+                log_level: level,
+                payload_text: text.to_string(),
+                payload_raw: text.as_bytes().to_vec(),
+            });
+        }
+        app.apply_filter();
+        app
+    }
+
+    #[test]
+    fn test_filter_by_text() {
+        let mut app = build_mock_app_with_diverse_logs();
+        assert_eq!(app.filtered_log_indices.len(), 8); // all
+
+        app.filter.text = Some("CAN".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2); // "CAN bus timeout" + "CAN retransmit"
+    }
+
+    #[test]
+    fn test_filter_by_text_case_insensitive() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        app.filter.text = Some("can".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2); // case-insensitive
+    }
+
+    #[test]
+    fn test_filter_by_app_id() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        app.filter.app_id = Some("DIAG".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 3); // CAN1, CAN2, UDS1
+    }
+
+    #[test]
+    fn test_filter_by_ctx_id() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        app.filter.ctx_id = Some("BOOT".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2); // boot complete + watchdog reset
+    }
+
+    #[test]
+    fn test_filter_by_log_level() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // Warn and above (Fatal, Error, Warn)
+        app.filter.min_level = Some(crate::parser::LogLevel::Warn);
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 3); // Fatal + Error + Warn
+    }
+
+    #[test]
+    fn test_filter_compound_level_and_app() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // DIAG logs at Warn or above
+        app.filter.app_id = Some("DIAG".to_string());
+        app.filter.min_level = Some(crate::parser::LogLevel::Warn);
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2); // Error + Warn from DIAG
+    }
+
+    #[test]
+    fn test_filter_compound_all_criteria() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // DIAG + Error+ + "timeout"
+        app.filter.app_id = Some("DIAG".to_string());
+        app.filter.min_level = Some(crate::parser::LogLevel::Error);
+        app.filter.text = Some("timeout".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1); // Only "CAN bus timeout"
+        assert_eq!(app.logs[app.filtered_log_indices[0]].payload_text, "CAN bus timeout on channel 1");
+    }
+
+    #[test]
+    fn test_filter_by_regex() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // Regex: match "lat=... lon=..."
+        app.filter.text = Some(r"lat=\d+\.\d+".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1); // GPS fix
+    }
+
+    #[test]
+    fn test_filter_no_match() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        app.filter.text = Some("NONEXISTENT_STRING".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_reset() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        app.filter.text = Some("CAN".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2);
+
+        // Reset
+        app.filter = Filter::default();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 8); // all restored
+    }
+
+    #[test]
+    fn test_filter_resets_selected_index() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.logs_selected_index = 5;
+
+        app.filter.text = Some("CAN".to_string());
+        app.apply_filter();
+        // apply_filter should reset index to 0
+        assert_eq!(app.logs_selected_index, 0);
     }
 }
