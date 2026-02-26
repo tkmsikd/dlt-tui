@@ -16,17 +16,8 @@ pub mod tcp_client;
 pub mod ui;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // create app and run it
-    let mut app = App::new();
-
-    // Parse arguments
+    // Parse arguments BEFORE entering raw mode so --help and errors
+    // print cleanly to the terminal without corruption.
     let args: Vec<String> = env::args().collect();
     let mut connect_addr: Option<String> = None;
     let mut file_path: Option<PathBuf> = None;
@@ -63,6 +54,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         i += 1;
     }
+
+    // Setup terminal (raw mode) — only after argument validation passes
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Create app and initialize
+    let mut app = App::new();
 
     if let Some(addr) = connect_addr {
         app.connect_tcp(&addr);

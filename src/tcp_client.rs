@@ -1,14 +1,21 @@
 use std::io::{self, Read};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use crate::parser::{self, DltMessage};
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Connects to a dlt-daemon TCP socket and streams parsed messages into the channel.
 /// The connection runs on the calling thread (intended to be spawned in a background thread).
+/// Times out after 5 seconds if the host is unreachable.
 pub fn stream_from_tcp(addr: &str, tx: Sender<DltMessage>) -> io::Result<()> {
-    let stream = TcpStream::connect(addr)?;
+    let socket_addr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid address"))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
     stream_from_reader(stream, tx)
 }

@@ -83,8 +83,57 @@ fn read_4byte_id(input: &[u8]) -> IResult<&[u8], String> {
     ))
 }
 
+// ===== Endian-aware read helpers for verbose payload decoding =====
+
+fn read_u16_at(data: &[u8], pos: usize, msbf: bool) -> u16 {
+    if msbf {
+        u16::from_be_bytes([data[pos], data[pos + 1]])
+    } else {
+        u16::from_le_bytes([data[pos], data[pos + 1]])
+    }
+}
+
+fn read_u32_at(data: &[u8], pos: usize, msbf: bool) -> u32 {
+    if msbf {
+        u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+    } else {
+        u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+    }
+}
+
+fn read_u64_at(data: &[u8], pos: usize, msbf: bool) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[pos..pos + 8]);
+    if msbf {
+        u64::from_be_bytes(bytes)
+    } else {
+        u64::from_le_bytes(bytes)
+    }
+}
+
+fn read_i64_at(data: &[u8], pos: usize, byte_len: usize, msbf: bool) -> i64 {
+    match byte_len {
+        1 => data[pos] as i8 as i64,
+        2 => read_u16_at(data, pos, msbf) as i16 as i64,
+        4 => read_u32_at(data, pos, msbf) as i32 as i64,
+        8 => read_u64_at(data, pos, msbf) as i64,
+        _ => 0,
+    }
+}
+
+fn tyle_to_byte_len(tyle: u32) -> usize {
+    match tyle {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 8,
+        5 => 16,
+        _ => 4,
+    }
+}
+
 /// Decode a DLT verbose-mode payload into a human-readable string.
-/// Each argument is encoded as TypeInfo(4 bytes) + optional length + data.
+/// Each argument is encoded as TypeInfo(4 bytes) + optional VARI info + data.
 /// `msbf` indicates the byte order of the payload content.
 fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
     let mut parts = Vec::new();
@@ -95,35 +144,10 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             break;
         }
 
-        let type_info = if msbf {
-            u32::from_be_bytes([
-                payload[pos],
-                payload[pos + 1],
-                payload[pos + 2],
-                payload[pos + 3],
-            ])
-        } else {
-            u32::from_le_bytes([
-                payload[pos],
-                payload[pos + 1],
-                payload[pos + 2],
-                payload[pos + 3],
-            ])
-        };
+        let type_info = read_u32_at(payload, pos, msbf);
         pos += 4;
 
-        // TypeInfo bit fields (AUTOSAR DLT PRS):
-        // Bits 0-3: TYLE (type length)
-        // Bit 4: BOOL
-        // Bit 5: SINT
-        // Bit 6: UINT
-        // Bit 7: FLOA
-        // Bit 8: APTS (array)
-        // Bit 9: STRG
-        // Bit 10: RAWD
-        // Bit 11: VARI (variable info)
-        // Bit 15: FIXP (fixed point)
-        let _tyle = type_info & 0x0F;
+        let tyle = type_info & 0x0F;
         let is_bool = (type_info >> 4) & 1 == 1;
         let is_sint = (type_info >> 5) & 1 == 1;
         let is_uint = (type_info >> 6) & 1 == 1;
@@ -132,48 +156,38 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
         let is_rawd = (type_info >> 10) & 1 == 1;
         let is_vari = (type_info >> 11) & 1 == 1;
 
-        // Handle variable info (name + unit) - skip it for display
+        // Skip VARI (variable info: name + optional unit) — bounds-checked
         if is_vari {
-            // Variable info has: name_length(2) + name + unit_length(2) + unit
             if pos + 2 > payload.len() {
                 break;
             }
-            let name_len = if msbf {
-                u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize
-            } else {
-                u16::from_le_bytes([payload[pos], payload[pos + 1]]) as usize
-            };
+            let name_len = read_u16_at(payload, pos, msbf) as usize;
             pos += 2;
-            pos += name_len; // skip name
-            if is_strg || is_rawd {
-                // no unit for string/raw
-            } else {
+            if pos + name_len > payload.len() {
+                break; // S2: prevent OOB from crafted name_len
+            }
+            pos += name_len;
+
+            if !(is_strg || is_rawd) {
                 if pos + 2 > payload.len() {
                     break;
                 }
-                let unit_len = if msbf {
-                    u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize
-                } else {
-                    u16::from_le_bytes([payload[pos], payload[pos + 1]]) as usize
-                };
+                let unit_len = read_u16_at(payload, pos, msbf) as usize;
                 pos += 2;
-                pos += unit_len; // skip unit
+                if pos + unit_len > payload.len() {
+                    break; // S2: prevent OOB from crafted unit_len
+                }
+                pos += unit_len;
             }
         }
 
         if is_strg {
-            // String: length(2 bytes) + data (including null terminator)
             if pos + 2 > payload.len() {
                 break;
             }
-            let str_len = if msbf {
-                u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize
-            } else {
-                u16::from_le_bytes([payload[pos], payload[pos + 1]]) as usize
-            };
+            let str_len = read_u16_at(payload, pos, msbf) as usize;
             pos += 2;
             if pos + str_len > payload.len() {
-                // Partial string - take what we can
                 let s = String::from_utf8_lossy(&payload[pos..])
                     .trim_end_matches('\0')
                     .to_string();
@@ -186,78 +200,21 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(s);
             pos += str_len;
         } else if is_bool {
-            if pos + 1 > payload.len() {
+            if pos >= payload.len() {
                 break;
             }
-            parts.push(if payload[pos] != 0 {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            });
+            parts.push(if payload[pos] != 0 { "true" } else { "false" }.to_string());
             pos += 1;
         } else if is_uint {
-            let byte_len = match _tyle {
-                1 => 1,
-                2 => 2,
-                3 => 4,
-                4 => 8,
-                5 => 16,
-                _ => 4,
-            };
+            let byte_len = tyle_to_byte_len(tyle);
             if pos + byte_len > payload.len() {
                 break;
             }
-            let val = match byte_len {
+            let val: u64 = match byte_len {
                 1 => payload[pos] as u64,
-                2 => {
-                    if msbf {
-                        u16::from_be_bytes([payload[pos], payload[pos + 1]]) as u64
-                    } else {
-                        u16::from_le_bytes([payload[pos], payload[pos + 1]]) as u64
-                    }
-                }
-                4 => {
-                    if msbf {
-                        u32::from_be_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                        ]) as u64
-                    } else {
-                        u32::from_le_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                        ]) as u64
-                    }
-                }
-                8 => {
-                    if msbf {
-                        u64::from_be_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                            payload[pos + 4],
-                            payload[pos + 5],
-                            payload[pos + 6],
-                            payload[pos + 7],
-                        ])
-                    } else {
-                        u64::from_le_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                            payload[pos + 4],
-                            payload[pos + 5],
-                            payload[pos + 6],
-                            payload[pos + 7],
-                        ])
-                    }
-                }
+                2 => read_u16_at(payload, pos, msbf) as u64,
+                4 => read_u32_at(payload, pos, msbf) as u64,
+                8 => read_u64_at(payload, pos, msbf),
                 _ => {
                     pos += byte_len;
                     parts.push(format!("<uint{}>", byte_len * 8));
@@ -267,138 +224,31 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(val.to_string());
             pos += byte_len;
         } else if is_sint {
-            let byte_len = match _tyle {
-                1 => 1,
-                2 => 2,
-                3 => 4,
-                4 => 8,
-                _ => 4,
-            };
+            let byte_len = tyle_to_byte_len(tyle).min(8); // sint has no 128-bit
             if pos + byte_len > payload.len() {
                 break;
             }
-            let val = match byte_len {
-                1 => payload[pos] as i8 as i64,
-                2 => {
-                    if msbf {
-                        i16::from_be_bytes([payload[pos], payload[pos + 1]]) as i64
-                    } else {
-                        i16::from_le_bytes([payload[pos], payload[pos + 1]]) as i64
-                    }
-                }
-                4 => {
-                    if msbf {
-                        i32::from_be_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                        ]) as i64
-                    } else {
-                        i32::from_le_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                        ]) as i64
-                    }
-                }
-                8 => {
-                    if msbf {
-                        i64::from_be_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                            payload[pos + 4],
-                            payload[pos + 5],
-                            payload[pos + 6],
-                            payload[pos + 7],
-                        ])
-                    } else {
-                        i64::from_le_bytes([
-                            payload[pos],
-                            payload[pos + 1],
-                            payload[pos + 2],
-                            payload[pos + 3],
-                            payload[pos + 4],
-                            payload[pos + 5],
-                            payload[pos + 6],
-                            payload[pos + 7],
-                        ])
-                    }
-                }
-                _ => {
-                    pos += byte_len;
-                    parts.push(format!("<sint{}>", byte_len * 8));
-                    continue;
-                }
-            };
+            let val = read_i64_at(payload, pos, byte_len, msbf);
             parts.push(val.to_string());
             pos += byte_len;
         } else if is_float {
-            let byte_len = match _tyle {
-                3 => 4, // float32
-                4 => 8, // float64
-                _ => 4,
-            };
+            let byte_len = if tyle == 4 { 8 } else { 4 };
             if pos + byte_len > payload.len() {
                 break;
             }
             if byte_len == 4 {
-                let val = if msbf {
-                    f32::from_be_bytes([
-                        payload[pos],
-                        payload[pos + 1],
-                        payload[pos + 2],
-                        payload[pos + 3],
-                    ])
-                } else {
-                    f32::from_le_bytes([
-                        payload[pos],
-                        payload[pos + 1],
-                        payload[pos + 2],
-                        payload[pos + 3],
-                    ])
-                };
-                parts.push(format!("{:.6}", val));
+                let bits = read_u32_at(payload, pos, msbf);
+                parts.push(format!("{:.6}", f32::from_bits(bits)));
             } else {
-                let val = if msbf {
-                    f64::from_be_bytes([
-                        payload[pos],
-                        payload[pos + 1],
-                        payload[pos + 2],
-                        payload[pos + 3],
-                        payload[pos + 4],
-                        payload[pos + 5],
-                        payload[pos + 6],
-                        payload[pos + 7],
-                    ])
-                } else {
-                    f64::from_le_bytes([
-                        payload[pos],
-                        payload[pos + 1],
-                        payload[pos + 2],
-                        payload[pos + 3],
-                        payload[pos + 4],
-                        payload[pos + 5],
-                        payload[pos + 6],
-                        payload[pos + 7],
-                    ])
-                };
-                parts.push(format!("{:.6}", val));
+                let bits = read_u64_at(payload, pos, msbf);
+                parts.push(format!("{:.6}", f64::from_bits(bits)));
             }
             pos += byte_len;
         } else if is_rawd {
-            // Raw data: length(2 bytes) + data
             if pos + 2 > payload.len() {
                 break;
             }
-            let raw_len = if msbf {
-                u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize
-            } else {
-                u16::from_le_bytes([payload[pos], payload[pos + 1]]) as usize
-            };
+            let raw_len = read_u16_at(payload, pos, msbf) as usize;
             pos += 2;
             if pos + raw_len > payload.len() {
                 break;
@@ -410,7 +260,6 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(format!("[{}]", hex.join(" ")));
             pos += raw_len;
         } else {
-            // Unknown type - skip remaining
             break;
         }
     }
