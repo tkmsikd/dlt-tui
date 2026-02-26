@@ -385,6 +385,147 @@ impl App {
         self.should_quit = true;
     }
 
+    /// Handle a key event. `page_size` is the number of visible rows (from terminal height).
+    pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, page_size: usize) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Dismiss error on any key press
+        if self.error_message.is_some() {
+            self.error_message = None;
+            return;
+        }
+
+        // Filter input mode: capture text input for active filter
+        if let Some(mode) = self.filter_input_mode.clone() {
+            match key.code {
+                KeyCode::Enter => {
+                    self.filter_input_mode = None;
+                    let input = if self.filter_input.is_empty() {
+                        None
+                    } else {
+                        Some(self.filter_input.clone())
+                    };
+                    match mode {
+                        FilterInputMode::Text => self.filter.text = input,
+                        FilterInputMode::AppId => self.filter.app_id = input,
+                        FilterInputMode::CtxId => self.filter.ctx_id = input,
+                        FilterInputMode::MinLevel => {
+                            self.filter.min_level =
+                                match self.filter_input.to_lowercase().as_str() {
+                                    "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
+                                    "e" | "error" => Some(crate::parser::LogLevel::Error),
+                                    "w" | "warn" => Some(crate::parser::LogLevel::Warn),
+                                    "i" | "info" => Some(crate::parser::LogLevel::Info),
+                                    "d" | "debug" => Some(crate::parser::LogLevel::Debug),
+                                    "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
+                                    _ => None,
+                                };
+                        }
+                    }
+                    self.apply_filter();
+                }
+                KeyCode::Esc => {
+                    self.filter_input_mode = None;
+                    self.filter_input.clear();
+                    match mode {
+                        FilterInputMode::Text => self.filter.text = None,
+                        FilterInputMode::AppId => self.filter.app_id = None,
+                        FilterInputMode::CtxId => self.filter.ctx_id = None,
+                        FilterInputMode::MinLevel => self.filter.min_level = None,
+                    }
+                    self.apply_filter();
+                }
+                KeyCode::Char(c) => self.filter_input.push(c),
+                KeyCode::Backspace => { self.filter_input.pop(); }
+                _ => {}
+            }
+            return;
+        }
+
+        // Normal mode key handling
+        match key.code {
+            KeyCode::Char('q') => match self.screen {
+                AppScreen::Explorer => self.on_key_q(),
+                AppScreen::LogViewer => self.screen = AppScreen::Explorer,
+                AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
+            },
+            KeyCode::Char('j') | KeyCode::Down => self.on_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.on_up(),
+            KeyCode::Char('g') | KeyCode::Home => self.on_home(),
+            KeyCode::Char('G') | KeyCode::End => self.on_end(),
+            // Page scrolling
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.on_page_down(page_size);
+            }
+            KeyCode::PageDown => self.on_page_down(page_size),
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.on_page_up(page_size);
+            }
+            KeyCode::PageUp => self.on_page_up(page_size),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.on_half_page_down(page_size);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.on_half_page_up(page_size);
+            }
+            KeyCode::Char('/') if self.screen == AppScreen::LogViewer => {
+                self.filter_input_mode = Some(FilterInputMode::Text);
+                self.filter_input.clear();
+            }
+            KeyCode::Char('l') if self.screen == AppScreen::LogViewer => {
+                self.filter_input_mode = Some(FilterInputMode::MinLevel);
+                self.filter_input.clear();
+            }
+            KeyCode::Char('a') if self.screen == AppScreen::LogViewer => {
+                self.filter_input_mode = Some(FilterInputMode::AppId);
+                self.filter_input.clear();
+            }
+            KeyCode::Char('c') if self.screen == AppScreen::LogViewer => {
+                self.filter_input_mode = Some(FilterInputMode::CtxId);
+                self.filter_input.clear();
+            }
+            KeyCode::Char('C') if self.screen == AppScreen::LogViewer => {
+                self.filter = Filter::default();
+                self.apply_filter();
+            }
+            KeyCode::Char('F') if self.screen == AppScreen::LogViewer => {
+                self.auto_scroll = !self.auto_scroll;
+            }
+            KeyCode::Enter => {
+                if self.screen == AppScreen::Explorer {
+                    if !self.explorer_items.is_empty() {
+                        let selected = &self.explorer_items[self.explorer_selected_index];
+                        if selected.is_dir {
+                            let path_clone = selected.path.clone();
+                            if let Err(e) = self.load_directory(&path_clone) {
+                                self.error_message =
+                                    Some(format!("Could not open directory: {}", e));
+                            }
+                        } else {
+                            let path_clone = selected.path.clone();
+                            if let Err(e) = self.load_file(&path_clone) {
+                                self.error_message =
+                                    Some(format!("Could not open file: {}", e));
+                            }
+                        }
+                    }
+                } else if self.screen == AppScreen::LogViewer
+                    && !self.filtered_log_indices.is_empty()
+                {
+                    self.screen = AppScreen::LogDetail;
+                }
+            }
+            KeyCode::Esc => {
+                if self.screen == AppScreen::LogViewer {
+                    self.screen = AppScreen::Explorer;
+                } else if self.screen == AppScreen::LogDetail {
+                    self.screen = AppScreen::LogViewer;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn connect_tcp(&mut self, addr: &str) {
         self.logs.clear();
         self.filtered_log_indices.clear();

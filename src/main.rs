@@ -1,12 +1,12 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{env, io, path::PathBuf};
 
-use crate::app::{App, AppScreen};
+use crate::app::App;
 
 pub mod app;
 pub mod explorer;
@@ -110,166 +110,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
 
-        // Compute page size from terminal height (total - borders(2) - header(2) - status(3))
         let page_size = terminal.size()?.height.saturating_sub(7) as usize;
 
         if crossterm::event::poll(tick_rate)?
             && let Event::Key(key) = event::read()?
         {
-            // Dismiss error on any key press
-            if app.error_message.is_some() {
-                app.error_message = None;
-                continue;
-            }
-
-            if let Some(mode) = app.filter_input_mode.clone() {
-                match key.code {
-                    KeyCode::Enter => {
-                        app.filter_input_mode = None;
-
-                        let input = if app.filter_input.is_empty() {
-                            None
-                        } else {
-                            Some(app.filter_input.clone())
-                        };
-
-                        match mode {
-                            crate::app::FilterInputMode::Text => app.filter.text = input,
-                            crate::app::FilterInputMode::AppId => app.filter.app_id = input,
-                            crate::app::FilterInputMode::CtxId => app.filter.ctx_id = input,
-                            crate::app::FilterInputMode::MinLevel => {
-                                app.filter.min_level =
-                                    match app.filter_input.to_lowercase().as_str() {
-                                        "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
-                                        "e" | "error" => Some(crate::parser::LogLevel::Error),
-                                        "w" | "warn" => Some(crate::parser::LogLevel::Warn),
-                                        "i" | "info" => Some(crate::parser::LogLevel::Info),
-                                        "d" | "debug" => Some(crate::parser::LogLevel::Debug),
-                                        "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
-                                        _ => None,
-                                    };
-                            }
-                        }
-                        app.apply_filter();
-                    }
-                    KeyCode::Esc => {
-                        app.filter_input_mode = None;
-                        app.filter_input.clear();
-                        match mode {
-                            crate::app::FilterInputMode::Text => app.filter.text = None,
-                            crate::app::FilterInputMode::AppId => app.filter.app_id = None,
-                            crate::app::FilterInputMode::CtxId => app.filter.ctx_id = None,
-                            crate::app::FilterInputMode::MinLevel => app.filter.min_level = None,
-                        }
-
-                        app.apply_filter();
-                    }
-                    KeyCode::Char(c) => {
-                        app.filter_input.push(c);
-                    }
-                    KeyCode::Backspace => {
-                        app.filter_input.pop();
-                    }
-                    _ => {}
-                }
-            } else {
-                match key.code {
-                    KeyCode::Char('q') => match app.screen {
-                        AppScreen::Explorer => app.on_key_q(),
-                        AppScreen::LogViewer => app.screen = AppScreen::Explorer,
-                        AppScreen::LogDetail => app.screen = AppScreen::LogViewer,
-                    },
-                    KeyCode::Char('j') | KeyCode::Down => app.on_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.on_up(),
-                    KeyCode::Char('g') | KeyCode::Home => app.on_home(),
-                    KeyCode::Char('G') | KeyCode::End => app.on_end(),
-                    // Page scrolling
-                    KeyCode::Char('f') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                        app.on_page_down(page_size);
-                    }
-                    KeyCode::PageDown => app.on_page_down(page_size),
-                    KeyCode::Char('b') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                        app.on_page_up(page_size);
-                    }
-                    KeyCode::PageUp => app.on_page_up(page_size),
-                    KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                        app.on_half_page_down(page_size);
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                        app.on_half_page_up(page_size);
-                    }
-                    KeyCode::Char('/') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.filter_input_mode = Some(crate::app::FilterInputMode::Text);
-                            app.filter_input.clear();
-                        }
-                    }
-                    KeyCode::Char('l') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.filter_input_mode = Some(crate::app::FilterInputMode::MinLevel);
-                            app.filter_input.clear();
-                        }
-                    }
-                    KeyCode::Char('a') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.filter_input_mode = Some(crate::app::FilterInputMode::AppId);
-                            app.filter_input.clear();
-                        }
-                    }
-                    KeyCode::Char('c') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.filter_input_mode = Some(crate::app::FilterInputMode::CtxId);
-                            app.filter_input.clear();
-                        }
-                    }
-                    KeyCode::Char('C') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.filter = crate::app::Filter::default();
-                            app.apply_filter();
-                        }
-                    }
-                    KeyCode::Char('F') => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.auto_scroll = !app.auto_scroll;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        // MVP logic for Enter key (navigate or open)
-                        if app.screen == AppScreen::Explorer {
-                            if !app.explorer_items.is_empty() {
-                                let selected_item =
-                                    &app.explorer_items[app.explorer_selected_index];
-                                if selected_item.is_dir {
-                                    let path_clone = selected_item.path.clone();
-                                    if let Err(e) = app.load_directory(&path_clone) {
-                                        app.error_message =
-                                            Some(format!("Could not open directory: {}", e));
-                                    }
-                                } else {
-                                    let path_clone = selected_item.path.clone();
-                                    if let Err(e) = app.load_file(&path_clone) {
-                                        app.error_message =
-                                            Some(format!("Could not open file: {}", e));
-                                    }
-                                }
-                            }
-                        } else if app.screen == AppScreen::LogViewer
-                            && !app.filtered_log_indices.is_empty()
-                        {
-                            app.screen = AppScreen::LogDetail;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        if app.screen == AppScreen::LogViewer {
-                            app.screen = AppScreen::Explorer;
-                        } else if app.screen == AppScreen::LogDetail {
-                            app.screen = AppScreen::LogViewer;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        } // Close if crossterm::event::poll !
+            app.handle_key(key, page_size);
+        }
 
         app.on_tick();
 
