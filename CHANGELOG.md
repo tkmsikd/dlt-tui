@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-02-27
+
+### Added
+
+- **Page scrolling** — `Ctrl+f` / `PageDown` (full page down), `Ctrl+b` / `PageUp` (full page up), `Ctrl+d` (half page down), `Ctrl+u` (half page up) for vim-style fast navigation
+- Comprehensive filter scenario tests (text, APP ID, CTX ID, log level, compound, regex)
+- Strengthened UI rendering tests with actual content verification
+- TCP stream tests for garbage recovery, truncation, and receiver-dropped edge cases
+
+### Fixed
+
+- **Security: TCP connect timeout** — Added 5-second connection timeout; unreachable hosts no longer hang indefinitely
+- **Security: Verbose decoder bounds check** — VARI name/unit length fields are now validated to prevent out-of-bounds reads from crafted DLT payloads
+- **Security: CLI before raw mode** — `--help` and argument errors no longer corrupt the terminal
+- **Explorer sort order** — `..` (parent directory) now always appears first regardless of other entry names
+
+### Changed
+
+- Extracted `App::handle_key()` from `run_app()` — key handling is now unit-testable (main.rs reduced from 170+ to 20 lines)
+- Refactored verbose payload decoder with shared endian-aware helpers (`read_u16_at`, `read_u32_at`, etc.) — 333→160 lines
+- Eliminated per-row `String::clone()` in LogViewer rendering for better performance
+- Updated status bar hints with page scrolling keybindings
+- Updated README keybinding tables
+
 ## [0.3.0] - 2026-02-25
 
 ### Added
@@ -53,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security hardening** — Zip bomb protection (500MB limit), terminal injection sanitization
 - **CLI argument support** — pass a directory or file path to open directly
 
+[0.3.1]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tkmsikd/dlt-tui/releases/tag/v0.1.0
