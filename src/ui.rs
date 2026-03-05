@@ -78,12 +78,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                     ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
                     ratatui::widgets::Cell::from(format_timestamp(log.timestamp_us)),
                     ratatui::widgets::Cell::from(log.ecu_id.as_str()),
-                    ratatui::widgets::Cell::from(
-                        log.apid.as_deref().unwrap_or("-"),
-                    ),
-                    ratatui::widgets::Cell::from(
-                        log.ctid.as_deref().unwrap_or("-"),
-                    ),
+                    ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
+                    ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
                     ratatui::widgets::Cell::from(log.payload_text.as_str()),
                 ];
                 ratatui::widgets::Row::new(cells).height(1)
@@ -237,11 +233,17 @@ pub fn draw(f: &mut Frame, app: &App) {
                     app.logs.len()
                 )
             }
-            AppScreen::LogDetail => format!(
-                "Mode: Detail | Log {}/{} | (j/k) Scroll Logs | (Esc) Back to Viewer",
-                app.logs_selected_index + 1,
-                app.filtered_log_indices.len()
-            ),
+            AppScreen::LogDetail => {
+                if app.filtered_log_indices.is_empty() {
+                    "Mode: Detail | No matching logs | (Esc) Back to Viewer".to_string()
+                } else {
+                    format!(
+                        "Mode: Detail | Log {}/{} | (j/k) Scroll Logs | (Esc) Back to Viewer",
+                        app.logs_selected_index + 1,
+                        app.filtered_log_indices.len()
+                    )
+                }
+            }
         };
 
         if let Some(ref mode) = app.filter_input_mode {
@@ -299,9 +301,15 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).unwrap();
 
         let text = buffer_to_string(&terminal);
-        assert!(text.contains("File Explorer"), "Should show 'File Explorer' title");
+        assert!(
+            text.contains("File Explorer"),
+            "Should show 'File Explorer' title"
+        );
         assert!(text.contains("test_file.dlt"), "Should show the file name");
-        assert!(text.contains("Mode: Explorer"), "Should show Explorer mode in status bar");
+        assert!(
+            text.contains("Mode: Explorer"),
+            "Should show Explorer mode in status bar"
+        );
     }
 
     #[test]
@@ -324,7 +332,10 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).unwrap();
 
         let text = buffer_to_string(&terminal);
-        assert!(text.contains("Log Viewer"), "Should show 'Log Viewer' title");
+        assert!(
+            text.contains("Log Viewer"),
+            "Should show 'Log Viewer' title"
+        );
         assert!(text.contains("Level"), "Should show column header");
         assert!(text.contains("Payload"), "Should show Payload column");
         assert!(text.contains("ECU1"), "Should show ECU ID");
@@ -353,10 +364,16 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).unwrap();
 
         let text = buffer_to_string(&terminal);
-        assert!(text.contains("Log Metadata"), "Should show metadata section");
+        assert!(
+            text.contains("Log Metadata"),
+            "Should show metadata section"
+        );
         assert!(text.contains("Hex Dump"), "Should show hex dump section");
         assert!(text.contains("ECU2"), "Should show ECU ID in detail");
-        assert!(text.contains("GPS fix acquired"), "Should show payload text");
+        assert!(
+            text.contains("GPS fix acquired"),
+            "Should show payload text"
+        );
     }
 
     #[test]
@@ -388,5 +405,38 @@ mod tests {
         let text = buffer_to_string(&terminal);
         assert!(text.contains("Search Text"), "Should show search prompt");
         assert!(text.contains("CAN"), "Should show current input text");
+    }
+
+    /// FIXED BUG-5: LogDetail status bar shows "No matching logs" instead of "Log 1/0"
+    #[test]
+    fn test_draw_log_detail_empty_filter() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogDetail;
+        // Add a log but apply a filter that matches nothing
+        app.logs.push(DltMessage {
+            timestamp_us: 1_000_000,
+            ecu_id: "ECU1".to_string(),
+            apid: Some("APP1".to_string()),
+            ctid: Some("CTX1".to_string()),
+            log_level: Some(crate::parser::LogLevel::Info),
+            payload_text: "test message".to_string(),
+            payload_raw: b"test message".to_vec(),
+        });
+        // filtered_log_indices is empty (no filter applied to populate it)
+        // This simulates the case where a filter removes all results
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(
+            text.contains("No matching logs"),
+            "Should show 'No matching logs' instead of 'Log 1/0'"
+        );
+        assert!(
+            !text.contains("Log 1/0"),
+            "Should NOT show misleading 'Log 1/0'"
+        );
     }
 }

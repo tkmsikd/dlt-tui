@@ -1,8 +1,8 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
@@ -180,16 +180,26 @@ impl App {
             }
         }
 
-        if let Some(ref app_id) = filter.app_id
-            && log.apid.as_deref() != Some(app_id.as_str())
-        {
-            return false;
+        if let Some(ref app_id) = filter.app_id {
+            let matches = log
+                .apid
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case(app_id))
+                .unwrap_or(false);
+            if !matches {
+                return false;
+            }
         }
 
-        if let Some(ref ctx_id) = filter.ctx_id
-            && log.ctid.as_deref() != Some(ctx_id.as_str())
-        {
-            return false;
+        if let Some(ref ctx_id) = filter.ctx_id {
+            let matches = log
+                .ctid
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case(ctx_id))
+                .unwrap_or(false);
+            if !matches {
+                return false;
+            }
         }
 
         true
@@ -372,15 +382,6 @@ impl App {
         self.on_page_up(page_size / 2);
     }
 
-    pub fn on_enter(&mut self) {
-        // For MVP, just flip state for now
-        match self.screen {
-            AppScreen::Explorer => self.screen = AppScreen::LogViewer,
-            AppScreen::LogViewer => self.screen = AppScreen::LogDetail,
-            AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
-        }
-    }
-
     pub fn on_key_q(&mut self) {
         self.should_quit = true;
     }
@@ -410,33 +411,29 @@ impl App {
                         FilterInputMode::AppId => self.filter.app_id = input,
                         FilterInputMode::CtxId => self.filter.ctx_id = input,
                         FilterInputMode::MinLevel => {
-                            self.filter.min_level =
-                                match self.filter_input.to_lowercase().as_str() {
-                                    "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
-                                    "e" | "error" => Some(crate::parser::LogLevel::Error),
-                                    "w" | "warn" => Some(crate::parser::LogLevel::Warn),
-                                    "i" | "info" => Some(crate::parser::LogLevel::Info),
-                                    "d" | "debug" => Some(crate::parser::LogLevel::Debug),
-                                    "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
-                                    _ => None,
-                                };
+                            self.filter.min_level = match self.filter_input.to_lowercase().as_str()
+                            {
+                                "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
+                                "e" | "error" => Some(crate::parser::LogLevel::Error),
+                                "w" | "warn" => Some(crate::parser::LogLevel::Warn),
+                                "i" | "info" => Some(crate::parser::LogLevel::Info),
+                                "d" | "debug" => Some(crate::parser::LogLevel::Debug),
+                                "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
+                                _ => None,
+                            };
                         }
                     }
                     self.apply_filter();
                 }
                 KeyCode::Esc => {
+                    // Cancel: exit input mode without changing the filter
                     self.filter_input_mode = None;
                     self.filter_input.clear();
-                    match mode {
-                        FilterInputMode::Text => self.filter.text = None,
-                        FilterInputMode::AppId => self.filter.app_id = None,
-                        FilterInputMode::CtxId => self.filter.ctx_id = None,
-                        FilterInputMode::MinLevel => self.filter.min_level = None,
-                    }
-                    self.apply_filter();
                 }
                 KeyCode::Char(c) => self.filter_input.push(c),
-                KeyCode::Backspace => { self.filter_input.pop(); }
+                KeyCode::Backspace => {
+                    self.filter_input.pop();
+                }
                 _ => {}
             }
             return;
@@ -504,8 +501,7 @@ impl App {
                         } else {
                             let path_clone = selected.path.clone();
                             if let Err(e) = self.load_file(&path_clone) {
-                                self.error_message =
-                                    Some(format!("Could not open file: {}", e));
+                                self.error_message = Some(format!("Could not open file: {}", e));
                             }
                         }
                     }
@@ -552,6 +548,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
     fn build_mock_app_with_explorer_files() -> App {
@@ -785,14 +782,62 @@ mod tests {
         app.screen = AppScreen::LogViewer;
 
         let entries = vec![
-            ("ECU1", Some("DIAG"), Some("CAN1"), Some(crate::parser::LogLevel::Error), "CAN bus timeout on channel 1"),
-            ("ECU1", Some("DIAG"), Some("CAN2"), Some(crate::parser::LogLevel::Warn), "CAN retransmit count high"),
-            ("ECU1", Some("SYS"), Some("BOOT"), Some(crate::parser::LogLevel::Info), "System boot complete"),
-            ("ECU2", Some("NAV"), Some("GPS1"), Some(crate::parser::LogLevel::Debug), "GPS fix acquired lat=35.6 lon=139.7"),
-            ("ECU2", Some("NAV"), Some("MAP1"), Some(crate::parser::LogLevel::Info), "Map data loaded"),
-            ("ECU1", Some("SYS"), Some("BOOT"), Some(crate::parser::LogLevel::Fatal), "Watchdog reset detected"),
-            ("ECU1", Some("DIAG"), Some("UDS1"), Some(crate::parser::LogLevel::Info), "UDS session started"),
-            ("ECU2", Some("HMI"), Some("DISP"), Some(crate::parser::LogLevel::Verbose), "Frame rendered in 16ms"),
+            (
+                "ECU1",
+                Some("DIAG"),
+                Some("CAN1"),
+                Some(crate::parser::LogLevel::Error),
+                "CAN bus timeout on channel 1",
+            ),
+            (
+                "ECU1",
+                Some("DIAG"),
+                Some("CAN2"),
+                Some(crate::parser::LogLevel::Warn),
+                "CAN retransmit count high",
+            ),
+            (
+                "ECU1",
+                Some("SYS"),
+                Some("BOOT"),
+                Some(crate::parser::LogLevel::Info),
+                "System boot complete",
+            ),
+            (
+                "ECU2",
+                Some("NAV"),
+                Some("GPS1"),
+                Some(crate::parser::LogLevel::Debug),
+                "GPS fix acquired lat=35.6 lon=139.7",
+            ),
+            (
+                "ECU2",
+                Some("NAV"),
+                Some("MAP1"),
+                Some(crate::parser::LogLevel::Info),
+                "Map data loaded",
+            ),
+            (
+                "ECU1",
+                Some("SYS"),
+                Some("BOOT"),
+                Some(crate::parser::LogLevel::Fatal),
+                "Watchdog reset detected",
+            ),
+            (
+                "ECU1",
+                Some("DIAG"),
+                Some("UDS1"),
+                Some(crate::parser::LogLevel::Info),
+                "UDS session started",
+            ),
+            (
+                "ECU2",
+                Some("HMI"),
+                Some("DISP"),
+                Some(crate::parser::LogLevel::Verbose),
+                "Frame rendered in 16ms",
+            ),
         ];
 
         for (i, (ecu, apid, ctid, level, text)) in entries.into_iter().enumerate() {
@@ -878,7 +923,10 @@ mod tests {
         app.filter.text = Some("timeout".to_string());
         app.apply_filter();
         assert_eq!(app.filtered_log_indices.len(), 1); // Only "CAN bus timeout"
-        assert_eq!(app.logs[app.filtered_log_indices[0]].payload_text, "CAN bus timeout on channel 1");
+        assert_eq!(
+            app.logs[app.filtered_log_indices[0]].payload_text,
+            "CAN bus timeout on channel 1"
+        );
     }
 
     #[test]
@@ -923,5 +971,91 @@ mod tests {
         app.apply_filter();
         // apply_filter should reset index to 0
         assert_eq!(app.logs_selected_index, 0);
+    }
+
+    // ==================== Bug verification tests ====================
+
+    fn make_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    /// FIXED BUG-3: Esc during filter input now preserves previous filter value
+    #[test]
+    fn test_esc_preserves_previous_filter() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // Set an initial text filter
+        app.filter.text = Some("CAN".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 2);
+
+        // Enter filter input mode for text
+        app.handle_key(make_key(KeyCode::Char('/')), 20);
+        assert!(app.filter_input_mode.is_some());
+
+        // Type something new
+        app.handle_key(make_key(KeyCode::Char('X')), 20);
+
+        // Press Esc to cancel
+        app.handle_key(make_key(KeyCode::Esc), 20);
+
+        // Previous "CAN" filter should be preserved
+        assert_eq!(
+            app.filter.text,
+            Some("CAN".to_string()),
+            "Esc should preserve the previous filter value"
+        );
+        assert_eq!(
+            app.filtered_log_indices.len(),
+            2,
+            "Filter results should remain unchanged after Esc"
+        );
+    }
+
+    /// FIXED BUG-3b: Esc from first-time filter input leaves filter as None
+    #[test]
+    fn test_esc_first_time_filter_leaves_none() {
+        let mut app = build_mock_app_with_diverse_logs();
+        assert_eq!(app.filter.text, None);
+        assert_eq!(app.filtered_log_indices.len(), 8);
+
+        // Enter filter input mode for text (no previous filter)
+        app.handle_key(make_key(KeyCode::Char('/')), 20);
+        app.handle_key(make_key(KeyCode::Char('X')), 20);
+        app.handle_key(make_key(KeyCode::Esc), 20);
+
+        // Filter should remain None
+        assert_eq!(app.filter.text, None);
+        assert_eq!(app.filtered_log_indices.len(), 8);
+    }
+
+    /// FIXED BUG-4: APP ID filter is now case-insensitive
+    #[test]
+    fn test_app_id_filter_case_insensitive() {
+        let mut app = build_mock_app_with_diverse_logs();
+
+        // Filter with lowercase "diag" should match "DIAG"
+        app.filter.app_id = Some("diag".to_string());
+        app.apply_filter();
+        assert_eq!(
+            app.filtered_log_indices.len(),
+            3,
+            "APP ID filter should be case-insensitive: 'diag' matches 'DIAG'"
+        );
+
+        // CTX ID filter should also be case-insensitive
+        app.filter.app_id = None;
+        app.filter.ctx_id = Some("boot".to_string());
+        app.apply_filter();
+        assert_eq!(
+            app.filtered_log_indices.len(),
+            2,
+            "CTX ID filter should be case-insensitive: 'boot' matches 'BOOT'"
+        );
     }
 }

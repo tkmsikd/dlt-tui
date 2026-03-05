@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-03-03
+
+### Fixed
+
+- **Parser: Storage Header optional** — `parse_dlt_message` now supports DLT messages without Storage Header (`DLT\x01`), enabling TCP streaming from daemons that send raw standard header messages
+- **Parser: `find_next_sync` false positive reduction** — Heuristic now requires UEH bit and LEN ≥ 14, eliminating false sync detection on common ASCII bytes like space (0x20)
+- **Filter: Esc preserves previous value** — Pressing Esc during filter input now cancels without clearing the existing filter (previously destroyed the active filter)
+- **Filter: APP ID / CTX ID case-insensitive** — APP ID and CTX ID filters now use case-insensitive matching, consistent with text filter behavior
+- **UI: LogDetail empty state** — Status bar shows "No matching logs" instead of misleading "Log 1/0" when filter results are empty
+
+### Removed
+
+- Removed dead `on_enter()` public method that bypassed file loading logic (`handle_key` already handles Enter correctly)
+
 ## [0.3.1] - 2026-02-27
 
 ### Added
@@ -77,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security hardening** — Zip bomb protection (500MB limit), terminal injection sanitization
 - **CLI argument support** — pass a directory or file path to open directly
 
+[0.3.2]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.1.0...v0.2.0
