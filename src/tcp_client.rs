@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::parser::{self, DltMessage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB — prevents OOM from unparseable streams
 
 /// Connects to a dlt-daemon TCP socket and streams parsed messages into the channel.
 /// The connection runs on the calling thread (intended to be spawned in a background thread).
@@ -78,6 +79,19 @@ pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io:
         // Remove consumed bytes from buffer
         if consumed > 0 {
             buffer.drain(..consumed);
+        }
+
+        // Guard: prevent unbounded buffer growth from unparseable data
+        if buffer.len() > MAX_BUFFER_SIZE {
+            let search_start = buffer.len() / 2;
+            if let Some(sync_pos) = parser::find_next_sync(&buffer[search_start..]) {
+                // Found a potential message start — discard everything before it
+                buffer.drain(..search_start + sync_pos);
+            } else {
+                // No sync found — keep only the last 4KB for partial message recovery
+                let keep = 4096.min(buffer.len());
+                buffer.drain(..buffer.len() - keep);
+            }
         }
     }
 
@@ -223,5 +237,70 @@ mod tests {
         // stream_from_reader should return Ok, not panic
         let result = stream_from_reader(cursor, tx);
         assert!(result.is_ok());
+    }
+
+    /// Buffer guard: large volume of unparseable data should not cause OOM.
+    /// After processing, valid messages embedded in garbage should be recovered.
+    #[test]
+    fn test_stream_large_garbage_with_valid_message() {
+        let mut data = vec![0xCC; 200 * 1024];
+        // Followed by a valid message
+        data.extend(build_dlt_message_with_storage_header(b"Survived"));
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(cursor, tx).unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "Should recover the valid message after garbage"
+        );
+        assert_eq!(msgs[0].payload_text, "Survived");
+    }
+
+    /// Buffer guard: pure garbage should not panic or OOM.
+    #[test]
+    fn test_stream_pure_garbage_no_panic() {
+        // 500KB of pure garbage
+        let data: Vec<u8> = (0..500 * 1024).map(|i| (i % 251) as u8 | 0x80).collect();
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        let result = stream_from_reader(cursor, tx);
+        assert!(result.is_ok(), "Should not panic on pure garbage");
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(msgs.len(), 0, "No valid messages in garbage");
+    }
+
+    /// Buffer guard: buffer should be bounded even with adversarial data.
+    /// This test verifies that the MAX_BUFFER_SIZE constant is respected.
+    #[test]
+    fn test_buffer_bounded_by_max_size() {
+        // Create adversarial data: bytes that look like DLT version=1 headers
+        // but fail to parse, causing the parser to skip only 1 byte at a time.
+        // Without a buffer guard, this would keep the buffer large.
+        let mut data = Vec::new();
+        // 2MB of adversarial data: 0x21 (valid HTYP) followed by garbage
+        for _ in 0..2 * 1024 * 1024 / 4 {
+            data.extend_from_slice(&[0x21, 0x00, 0x00, 0x04]); // HTYP=0x21, LEN=4 (too short for ext)
+        }
+        // Add a valid message at the end
+        data.extend(build_dlt_message_with_storage_header(b"After adversarial"));
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(cursor, tx).unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        // The valid message at the end should be recovered
+        assert!(
+            msgs.iter().any(|m| m.payload_text == "After adversarial"),
+            "Should recover valid message after adversarial data"
+        );
     }
 }
