@@ -43,6 +43,7 @@ pub struct App {
     pub is_loading: bool,
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
+    pub horizontal_scroll: usize,
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
 }
@@ -71,6 +72,7 @@ impl App {
             is_loading: false,
             connection_info: None,
             auto_scroll: false,
+            horizontal_scroll: 0,
             skipped_bytes: 0,
             skipped_bytes_shared: None,
         }
@@ -105,6 +107,7 @@ impl App {
         self.logs_selected_index = 0;
         self.filter = Filter::default();
         self.is_loading = true;
+        self.horizontal_scroll = 0;
         self.skipped_bytes = 0;
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -244,6 +247,18 @@ impl App {
                     self.logs_selected_index = self.filtered_log_indices.len() - 1;
                 }
             }
+        }
+    }
+
+    pub fn on_right(&mut self, amount: usize) {
+        if self.screen == AppScreen::LogViewer {
+            self.horizontal_scroll = self.horizontal_scroll.saturating_add(amount);
+        }
+    }
+
+    pub fn on_left(&mut self, amount: usize) {
+        if self.screen == AppScreen::LogViewer {
+            self.horizontal_scroll = self.horizontal_scroll.saturating_sub(amount);
         }
     }
 
@@ -448,6 +463,20 @@ impl App {
             },
             KeyCode::Char('j') | KeyCode::Down => self.on_down(),
             KeyCode::Char('k') | KeyCode::Up => self.on_up(),
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.on_left(10);
+                } else {
+                    self.on_left(1);
+                }
+            }
+            KeyCode::Right => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.on_right(10);
+                } else {
+                    self.on_right(1);
+                }
+            }
             KeyCode::Char('g') | KeyCode::Home => self.on_home(),
             KeyCode::Char('G') | KeyCode::End => self.on_end(),
             // Page scrolling
@@ -529,6 +558,7 @@ impl App {
         self.filter = Filter::default();
         self.is_loading = true;
         self.auto_scroll = true;
+        self.horizontal_scroll = 0;
         self.connection_info = Some(addr.to_string());
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -571,21 +601,7 @@ mod tests {
                     path: PathBuf::from("fileB.dlt"),
                 },
             ],
-            explorer_selected_index: 0,
-            logs: vec![],
-            filtered_log_indices: vec![],
-            logs_selected_index: 0,
-            filter: Filter::default(),
-            filter_input_mode: None,
-            filter_input: String::new(),
-            error_message: None,
-            should_quit: false,
-            log_receiver: None,
-            is_loading: false,
-            connection_info: None,
-            auto_scroll: false,
-            skipped_bytes: 0,
-            skipped_bytes_shared: None,
+            ..App::new()
         }
     }
 
@@ -971,6 +987,24 @@ mod tests {
         app.apply_filter();
         // apply_filter should reset index to 0
         assert_eq!(app.logs_selected_index, 0);
+    }
+
+    #[test]
+    fn test_horizontal_scroll() {
+        let mut app = build_mock_app_with_logs(1);
+        assert_eq!(app.horizontal_scroll, 0);
+
+        app.on_right(1);
+        assert_eq!(app.horizontal_scroll, 1);
+
+        app.on_right(10);
+        assert_eq!(app.horizontal_scroll, 11);
+
+        app.on_left(5);
+        assert_eq!(app.horizontal_scroll, 6);
+
+        app.on_left(10);
+        assert_eq!(app.horizontal_scroll, 0, "Should clamp at 0");
     }
 
     // ==================== Bug verification tests ====================

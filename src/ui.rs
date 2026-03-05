@@ -74,13 +74,28 @@ pub fn draw(f: &mut Frame, app: &App) {
                     None => ("---", Color::Reset),
                 };
 
+                let payload_display = if app.horizontal_scroll > 0 {
+                    let chars: String = log
+                        .payload_text
+                        .chars()
+                        .skip(app.horizontal_scroll)
+                        .collect();
+                    if chars.is_empty() {
+                        " ".to_string()
+                    } else {
+                        chars
+                    }
+                } else {
+                    log.payload_text.clone()
+                };
+
                 let cells = vec![
                     ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
                     ratatui::widgets::Cell::from(format_timestamp(log.timestamp_us)),
                     ratatui::widgets::Cell::from(log.ecu_id.as_str()),
                     ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
                     ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
-                    ratatui::widgets::Cell::from(log.payload_text.as_str()),
+                    ratatui::widgets::Cell::from(payload_display),
                 ];
                 ratatui::widgets::Row::new(cells).height(1)
             });
@@ -224,7 +239,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear",
                     conn_str,
                     tail_str,
                     recovered_str,
