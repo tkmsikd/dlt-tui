@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // print cleanly to the terminal without corruption.
     let args: Vec<String> = env::args().collect();
     let mut connect_addr: Option<String> = None;
-    let mut file_path: Option<PathBuf> = None;
+    let mut file_paths: Vec<PathBuf> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -39,10 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("dlt-tui - A fast TUI viewer for Automotive DLT logs");
                 println!();
                 println!("USAGE:");
-                println!("    dlt-tui [OPTIONS] [PATH]");
+                println!("    dlt-tui [OPTIONS] [PATH...]");
                 println!();
                 println!("ARGS:");
-                println!("    [PATH]    File or directory to open");
+                println!("    [PATH...]  File(s) or directory to open");
                 println!();
                 println!("OPTIONS:");
                 println!("    -c, --connect <HOST:PORT>    Connect to a dlt-daemon TCP socket");
@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(0);
             }
             other => {
-                file_path = Some(PathBuf::from(other));
+                file_paths.push(PathBuf::from(other));
             }
         }
         i += 1;
@@ -69,21 +69,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(addr) = connect_addr {
         app.connect_tcp(&addr);
     } else {
-        let init_path = file_path.unwrap_or_else(|| env::current_dir().unwrap_or_default());
+        if file_paths.is_empty() {
+            file_paths.push(env::current_dir().unwrap_or_default());
+        }
 
-        if init_path.is_dir() {
-            if let Err(e) = app.load_directory(&init_path) {
+        if file_paths.len() == 1 && file_paths[0].is_dir() {
+            let dir_path = &file_paths[0];
+            if let Err(e) = app.load_directory(dir_path) {
                 app.error_message = Some(format!("Could not load directory: {}", e));
             }
         } else {
-            let parent = init_path.parent().unwrap_or(&init_path);
+            // Load file(s). Set explorer to the parent of the first file.
+            let first_path = &file_paths[0];
+            let parent = first_path.parent().unwrap_or(first_path);
             if let Err(e) = app.load_directory(parent) {
                 app.error_message = Some(format!("Could not load directory: {}", e));
             }
             if app.error_message.is_none()
-                && let Err(e) = app.load_file(&init_path)
+                && let Err(e) = app.load_files(file_paths)
             {
-                app.error_message = Some(format!("Could not load file: {}", e));
+                app.error_message = Some(format!("Could not load file(s): {}", e));
             }
         }
     }

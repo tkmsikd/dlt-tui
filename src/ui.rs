@@ -239,7 +239,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         let mut string = match app.screen {
             AppScreen::Explorer => format!(
-                "Mode: Explorer | Files: {} | (j/k) Move | (^f/^b) Page | (Enter) Open | (q) Quit",
+                "Mode: Explorer | Files: {} | (j/k) Move | (^f/^b) Page | (Enter) Open | (b) Batch load | (q) Quit",
                 app.explorer_items.len()
             ),
             AppScreen::LogViewer => {

@@ -1,6 +1,6 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -105,7 +105,7 @@ impl App {
         Ok(())
     }
 
-    pub fn load_file(&mut self, path: &Path) -> std::io::Result<()> {
+    pub fn load_files(&mut self, paths: Vec<PathBuf>) -> std::io::Result<()> {
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
@@ -121,22 +121,25 @@ impl App {
         let skipped_shared = Arc::new(AtomicUsize::new(0));
         self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
-        let path_buf = path.to_path_buf();
         std::thread::spawn(move || {
-            let mut stream = match crate::fs_reader::open_dlt_stream(&path_buf) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            let mut buffer = Vec::new();
-            if std::io::Read::read_to_end(&mut stream, &mut buffer).is_err() {
-                return;
-            }
+            let mut total_skipped = 0;
+            for path in paths {
+                let mut stream = match crate::fs_reader::open_dlt_stream(&path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let mut buffer = Vec::new();
+                if std::io::Read::read_to_end(&mut stream, &mut buffer).is_err() {
+                    continue;
+                }
 
-            let (messages, skipped) = crate::parser::parse_all_messages(&buffer);
-            skipped_shared.store(skipped, Ordering::Relaxed);
-            for msg in messages {
-                if tx.send(msg).is_err() {
-                    break; // Receiver dropped (app quit)
+                let (messages, skipped) = crate::parser::parse_all_messages(&buffer);
+                total_skipped += skipped;
+                skipped_shared.store(total_skipped, Ordering::Relaxed);
+                for msg in messages {
+                    if tx.send(msg).is_err() {
+                        return; // Receiver dropped (app quit)
+                    }
                 }
             }
         });
@@ -467,6 +470,35 @@ impl App {
                 AppScreen::LogViewer => self.screen = AppScreen::Explorer,
                 AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
             },
+            KeyCode::Char('b') if self.screen == AppScreen::Explorer => {
+                if !self.explorer_items.is_empty() {
+                    let selected = &self.explorer_items[self.explorer_selected_index];
+                    let dir_path = if selected.is_dir {
+                        selected.path.clone()
+                    } else {
+                        selected.path.parent().unwrap_or(&selected.path).to_path_buf()
+                    };
+                    
+                    if let Ok(mut entries) = crate::explorer::list_directory(&dir_path) {
+                        entries.sort_by(|a, b| a.name.cmp(&b.name));
+                        let files: Vec<PathBuf> = entries.into_iter()
+                            .filter(|e| !e.is_dir && (e.name.ends_with(".dlt") || e.name.ends_with(".dlt.gz") || e.name.ends_with(".dlt.zip")))
+                            .map(|e| e.path)
+                            .collect();
+                        
+                        if files.is_empty() {
+                            self.error_message = Some("No DLT files found in directory".to_string());
+                        } else {
+                            self.info_message = Some(format!("Batch loading {} files...", files.len()));
+                            if let Err(e) = self.load_files(files) {
+                                self.error_message = Some(format!("Batch load failed: {}", e));
+                            }
+                        }
+                    } else {
+                        self.error_message = Some("Failed to read directory for batch load".to_string());
+                    }
+                }
+            }
             KeyCode::Char('E') if self.screen == AppScreen::LogViewer => {
                 self.on_export();
             }
@@ -541,7 +573,7 @@ impl App {
                             }
                         } else {
                             let path_clone = selected.path.clone();
-                            if let Err(e) = self.load_file(&path_clone) {
+                            if let Err(e) = self.load_files(vec![path_clone]) {
                                 self.error_message = Some(format!("Could not open file: {}", e));
                             }
                         }

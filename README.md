@@ -64,8 +64,8 @@ dlt-tui
 # Open a specific directory
 dlt-tui /path/to/log/directory/
 
-# Directly open a DLT file (also works with .gz and .zip)
-dlt-tui /path/to/ecu_recording.dlt.gz
+# Directly open one or multiple DLT files
+dlt-tui /path/to/log1.dlt /path/to/log2.dlt.gz
 
 # Connect to a running dlt-daemon over TCP
 dlt-tui --connect localhost:3490
@@ -79,18 +79,19 @@ dlt-tui --connect localhost:3490
 
 ### File Explorer
 
-| Key                    | Action                     |
-| ---------------------- | -------------------------- |
-| `j` / `Down`           | Move down                  |
-| `k` / `Up`             | Move up                    |
-| `Ctrl+f` / `Page Down` | Page down                  |
-| `Ctrl+b` / `Page Up`   | Page up                    |
-| `Ctrl+d`               | Half page down             |
-| `Ctrl+u`               | Half page up               |
-| `g` / `Home`           | Jump to top                |
-| `G` / `End`            | Jump to bottom             |
-| `Enter`                | Open directory / Load file |
-| `q`                    | Quit                       |
+| Key                    | Action                      |
+| ---------------------- | --------------------------- |
+| `j` / `Down`           | Move down                   |
+| `k` / `Up`             | Move up                     |
+| `Ctrl+f` / `Page Down` | Page down                   |
+| `Ctrl+b` / `Page Up`   | Page up                     |
+| `Ctrl+d`               | Half page down              |
+| `Ctrl+u`               | Half page up                |
+| `g` / `Home`           | Jump to top                 |
+| `G` / `End`            | Jump to bottom              |
+| `Enter`                | Open directory / Load file  |
+| `b`                    | Batch load all files in dir |
+| `q`                    | Quit                        |
 
 ### Log Viewer
 
@@ -159,7 +160,7 @@ Stack filters to isolate exactly what you need:
 - [x] Horizontal scroll for long payloads
 - [ ] Bookmarking and log annotation
 - [ ] Saved filter configurations (`.dlt-tui.toml`)
-- [ ] Multi-file / directory batch loading
+- [x] Multi-file / directory batch loading
 - [x] Timestamp delta display between messages
 - [ ] DLT lifecycle and session tracking
 - [x] Export filtered logs to file
