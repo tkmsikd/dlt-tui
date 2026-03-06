@@ -279,7 +279,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (t) Delta | (E) Export",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (S) Save | (L) Load | (t) Delta | (E) Export",
                     conn_str,
                     tail_str,
                     recovered_str,

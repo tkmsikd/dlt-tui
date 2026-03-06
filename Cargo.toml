@@ -19,6 +19,8 @@ flate2 = "1.1.9"
 nom = "8.0.0"
 ratatui = { version = "0.30.0", features = ["all-widgets"] }
 regex = "1.12.3"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.0.4"
 zip = "8.1.0"
 
 [dev-dependencies]

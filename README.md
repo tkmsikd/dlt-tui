@@ -95,28 +95,30 @@ dlt-tui --connect localhost:3490
 
 ### Log Viewer
 
-| Key                    | Action                            |
-| ---------------------- | --------------------------------- |
-| `j` / `Down`           | Scroll down                       |
-| `k` / `Up`             | Scroll up                         |
-| `Ctrl+f` / `Page Down` | Page down                         |
-| `Ctrl+b` / `Page Up`   | Page up                           |
-| `Ctrl+d`               | Half page down                    |
-| `Ctrl+u`               | Half page up                      |
-| `Left` / `Right`       | Scroll payload horizontally       |
-| `Shift+Left`/`Right`   | Scroll payload horizontally fast  |
-| `g` / `Home`           | Jump to first log                 |
-| `G` / `End`            | Jump to last log                  |
-| `Enter`                | Open detail view with hex dump    |
-| `/`                    | Search text (regex supported)     |
-| `l`                    | Filter by log level (F/E/W/I/D/V) |
-| `a`                    | Filter by APP ID                  |
-| `c`                    | Filter by CTX ID                  |
-| `C`                    | Clear all filters                 |
-| `F`                    | Toggle auto-scroll (tail mode)    |
-| `t`                    | Toggle delta time ($\Delta$t)     |
-| `E`                    | Export filtered logs to file      |
-| `q` / `Esc`            | Back to File Explorer             |
+| Key                    | Action                                 |
+| ---------------------- | -------------------------------------- |
+| `j` / `Down`           | Scroll down                            |
+| `k` / `Up`             | Scroll up                              |
+| `Ctrl+f` / `Page Down` | Page down                              |
+| `Ctrl+b` / `Page Up`   | Page up                                |
+| `Ctrl+d`               | Half page down                         |
+| `Ctrl+u`               | Half page up                           |
+| `Left` / `Right`       | Scroll payload horizontally            |
+| `Shift+Left`/`Right`   | Scroll payload horizontally fast       |
+| `g` / `Home`           | Jump to first log                      |
+| `G` / `End`            | Jump to last log                       |
+| `Enter`                | Open detail view with hex dump         |
+| `/`                    | Search text (regex supported)          |
+| `l`                    | Filter by log level (F/E/W/I/D/V)      |
+| `a`                    | Filter by APP ID                       |
+| `c`                    | Filter by CTX ID                       |
+| `C`                    | Clear all filters                      |
+| `S`                    | Save filter block to `.dlt-tui.toml`   |
+| `L`                    | Load filter block from `.dlt-tui.toml` |
+| `F`                    | Toggle auto-scroll (tail mode)         |
+| `t`                    | Toggle delta time ($\Delta$t)          |
+| `E`                    | Export filtered logs to file           |
+| `q` / `Esc`            | Back to File Explorer                  |
 
 ### Log Detail
 
@@ -159,7 +161,7 @@ Stack filters to isolate exactly what you need:
 - [x] Page-up / Page-down scrolling
 - [x] Horizontal scroll for long payloads
 - [ ] Bookmarking and log annotation
-- [ ] Saved filter configurations (`.dlt-tui.toml`)
+- [x] Saved filter configurations (`.dlt-tui.toml`)
 - [x] Multi-file / directory batch loading
 - [x] Timestamp delta display between messages
 - [ ] DLT lifecycle and session tracking

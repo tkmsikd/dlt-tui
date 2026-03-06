@@ -11,7 +11,9 @@ pub enum AppScreen {
     LogDetail,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Filter {
     pub min_level: Option<crate::parser::LogLevel>,
     pub app_id: Option<String>,
@@ -82,6 +84,29 @@ impl App {
         }
     }
 
+    pub fn load_filter_config(&mut self) {
+        let path = std::path::Path::new(".dlt-tui.toml");
+        if path.exists()
+            && let Ok(content) = std::fs::read_to_string(path)
+            && let Ok(filter) = toml::from_str::<Filter>(&content)
+        {
+            self.filter = filter;
+            self.info_message = Some("Loaded filter from .dlt-tui.toml".to_string());
+        }
+    }
+
+    pub fn save_filter_config(&mut self) {
+        if let Ok(content) = toml::to_string(&self.filter) {
+            if std::fs::write(".dlt-tui.toml", content).is_ok() {
+                self.info_message = Some("Saved filter to .dlt-tui.toml".to_string());
+            } else {
+                self.error_message = Some("Failed to save filter config".to_string());
+            }
+        } else {
+            self.error_message = Some("Failed to serialize filter".to_string());
+        }
+    }
+
     pub fn load_directory(&mut self, path: &Path) -> std::io::Result<()> {
         let mut entries = explorer::list_directory(path)?;
 
@@ -109,7 +134,7 @@ impl App {
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
-        self.filter = Filter::default();
+        self.load_filter_config();
         self.is_loading = true;
         self.horizontal_scroll = 0;
         self.show_time_delta = false;
@@ -476,31 +501,51 @@ impl App {
                     let dir_path = if selected.is_dir {
                         selected.path.clone()
                     } else {
-                        selected.path.parent().unwrap_or(&selected.path).to_path_buf()
+                        selected
+                            .path
+                            .parent()
+                            .unwrap_or(&selected.path)
+                            .to_path_buf()
                     };
-                    
+
                     if let Ok(mut entries) = crate::explorer::list_directory(&dir_path) {
                         entries.sort_by(|a, b| a.name.cmp(&b.name));
-                        let files: Vec<PathBuf> = entries.into_iter()
-                            .filter(|e| !e.is_dir && (e.name.ends_with(".dlt") || e.name.ends_with(".dlt.gz") || e.name.ends_with(".dlt.zip")))
+                        let files: Vec<PathBuf> = entries
+                            .into_iter()
+                            .filter(|e| {
+                                !e.is_dir
+                                    && (e.name.ends_with(".dlt")
+                                        || e.name.ends_with(".dlt.gz")
+                                        || e.name.ends_with(".dlt.zip"))
+                            })
                             .map(|e| e.path)
                             .collect();
-                        
+
                         if files.is_empty() {
-                            self.error_message = Some("No DLT files found in directory".to_string());
+                            self.error_message =
+                                Some("No DLT files found in directory".to_string());
                         } else {
-                            self.info_message = Some(format!("Batch loading {} files...", files.len()));
+                            self.info_message =
+                                Some(format!("Batch loading {} files...", files.len()));
                             if let Err(e) = self.load_files(files) {
                                 self.error_message = Some(format!("Batch load failed: {}", e));
                             }
                         }
                     } else {
-                        self.error_message = Some("Failed to read directory for batch load".to_string());
+                        self.error_message =
+                            Some("Failed to read directory for batch load".to_string());
                     }
                 }
             }
             KeyCode::Char('E') if self.screen == AppScreen::LogViewer => {
                 self.on_export();
+            }
+            KeyCode::Char('S') if self.screen == AppScreen::LogViewer => {
+                self.save_filter_config();
+            }
+            KeyCode::Char('L') if self.screen == AppScreen::LogViewer => {
+                self.load_filter_config();
+                self.apply_filter();
             }
             KeyCode::Char('t') if self.screen == AppScreen::LogViewer => {
                 self.show_time_delta = !self.show_time_delta;
@@ -599,7 +644,7 @@ impl App {
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
-        self.filter = Filter::default();
+        self.load_filter_config();
         self.is_loading = true;
         self.auto_scroll = true;
         self.horizontal_scroll = 0;
