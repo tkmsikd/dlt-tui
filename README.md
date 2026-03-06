@@ -102,6 +102,8 @@ dlt-tui --connect localhost:3490
 | `Ctrl+b` / `Page Up`   | Page up                           |
 | `Ctrl+d`               | Half page down                    |
 | `Ctrl+u`               | Half page up                      |
+| `Left` / `Right`       | Scroll payload horizontally       |
+| `Shift+Left`/`Right`   | Scroll payload horizontally fast  |
 | `g` / `Home`           | Jump to first log                 |
 | `G` / `End`            | Jump to last log                  |
 | `Enter`                | Open detail view with hex dump    |
@@ -111,6 +113,8 @@ dlt-tui --connect localhost:3490
 | `c`                    | Filter by CTX ID                  |
 | `C`                    | Clear all filters                 |
 | `F`                    | Toggle auto-scroll (tail mode)    |
+| `t`                    | Toggle delta time ($\Delta$t)     |
+| `E`                    | Export filtered logs to file      |
 | `q` / `Esc`            | Back to File Explorer             |
 
 ### Log Detail
@@ -151,14 +155,14 @@ Stack filters to isolate exactly what you need:
 
 ## Roadmap
 
-- [ ] Page-up / Page-down scrolling
-- [ ] Horizontal scroll for long payloads
+- [x] Page-up / Page-down scrolling
+- [x] Horizontal scroll for long payloads
 - [ ] Bookmarking and log annotation
 - [ ] Saved filter configurations (`.dlt-tui.toml`)
 - [ ] Multi-file / directory batch loading
-- [ ] Timestamp delta display between messages
+- [x] Timestamp delta display between messages
 - [ ] DLT lifecycle and session tracking
-- [ ] Export filtered logs to file
+- [x] Export filtered logs to file
 - [ ] Plugin system for custom decoders (SOME/IP, UDS, etc.)
 
 ## Contributing
