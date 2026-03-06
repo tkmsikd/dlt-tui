@@ -52,7 +52,13 @@ pub fn draw(f: &mut Frame, app: &App) {
             f.render_stateful_widget(list, chunks[0], &mut state);
         }
         AppScreen::LogViewer => {
-            let header_cells = ["Level", "Time", "ECU", "APP", "CTX", "Payload"]
+            let time_header = if app.show_time_delta {
+                "Delta Time"
+            } else {
+                "Time"
+            };
+            let cols = ["Level", time_header, "ECU", "APP", "CTX", "Payload"];
+            let header_cells = cols
                 .iter()
                 .map(|h| ratatui::widgets::Cell::from(*h).style(Style::default().fg(Color::Cyan)));
 
@@ -61,44 +67,73 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .height(1)
                 .bottom_margin(1);
 
-            let rows = app.filtered_log_indices.iter().map(|&idx| {
-                let log = &app.logs[idx];
-                let (level_str, level_color) = match &log.log_level {
-                    Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
-                    Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
-                    Some(crate::parser::LogLevel::Warn) => ("WRN", Color::Yellow),
-                    Some(crate::parser::LogLevel::Info) => ("INF", Color::Green),
-                    Some(crate::parser::LogLevel::Debug) => ("DBG", Color::Blue),
-                    Some(crate::parser::LogLevel::Verbose) => ("VRB", Color::Gray),
-                    Some(crate::parser::LogLevel::Unknown(_)) => ("UNK", Color::DarkGray),
-                    None => ("---", Color::Reset),
-                };
+            let rows = app
+                .filtered_log_indices
+                .iter()
+                .enumerate()
+                .map(|(i, &idx)| {
+                    let log = &app.logs[idx];
+                    let (level_str, level_color) = match &log.log_level {
+                        Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
+                        Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
+                        Some(crate::parser::LogLevel::Warn) => ("WRN", Color::Yellow),
+                        Some(crate::parser::LogLevel::Info) => ("INF", Color::Green),
+                        Some(crate::parser::LogLevel::Debug) => ("DBG", Color::Blue),
+                        Some(crate::parser::LogLevel::Verbose) => ("VRB", Color::Gray),
+                        Some(crate::parser::LogLevel::Unknown(_)) => ("UNK", Color::DarkGray),
+                        None => ("---", Color::Reset),
+                    };
 
-                let payload_display = if app.horizontal_scroll > 0 {
-                    let chars: String = log
-                        .payload_text
-                        .chars()
-                        .skip(app.horizontal_scroll)
-                        .collect();
-                    if chars.is_empty() {
-                        " ".to_string()
+                    let payload_display = if app.horizontal_scroll > 0 {
+                        let chars: String = log
+                            .payload_text
+                            .chars()
+                            .skip(app.horizontal_scroll)
+                            .collect();
+                        if chars.is_empty() {
+                            " ".to_string()
+                        } else {
+                            chars
+                        }
                     } else {
-                        chars
-                    }
-                } else {
-                    log.payload_text.clone()
-                };
+                        log.payload_text.clone()
+                    };
 
-                let cells = vec![
-                    ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
-                    ratatui::widgets::Cell::from(format_timestamp(log.timestamp_us)),
-                    ratatui::widgets::Cell::from(log.ecu_id.as_str()),
-                    ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
-                    ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
-                    ratatui::widgets::Cell::from(payload_display),
-                ];
-                ratatui::widgets::Row::new(cells).height(1)
-            });
+                    let time_str = if app.show_time_delta {
+                        if i == 0 {
+                            "+0.000000s".to_string()
+                        } else {
+                            let prev_idx = app.filtered_log_indices[i - 1];
+                            let prev_log = &app.logs[prev_idx];
+                            let is_negative = log.timestamp_us < prev_log.timestamp_us;
+                            let diff_abs = if is_negative {
+                                prev_log.timestamp_us - log.timestamp_us
+                            } else {
+                                log.timestamp_us - prev_log.timestamp_us
+                            };
+                            let sign = if is_negative { "-" } else { "+" };
+                            format!(
+                                "{}{}.{:06}s",
+                                sign,
+                                diff_abs / 1_000_000,
+                                diff_abs % 1_000_000
+                            )
+                        }
+                    } else {
+                        format_timestamp(log.timestamp_us)
+                    };
+
+                    let cells = vec![
+                        ratatui::widgets::Cell::from(level_str)
+                            .style(Style::default().fg(level_color)),
+                        ratatui::widgets::Cell::from(time_str),
+                        ratatui::widgets::Cell::from(log.ecu_id.as_str()),
+                        ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
+                        ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
+                        ratatui::widgets::Cell::from(payload_display),
+                    ];
+                    ratatui::widgets::Row::new(cells).height(1)
+                });
 
             // Table widths: Level(5), Time(15), ECU(5), APP(5), CTX(5), Payload(Min(20))
             let widths = [
@@ -244,7 +279,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (E) Export",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (t) Delta | (E) Export",
                     conn_str,
                     tail_str,
                     recovered_str,

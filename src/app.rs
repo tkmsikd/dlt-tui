@@ -45,6 +45,7 @@ pub struct App {
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
     pub horizontal_scroll: usize,
+    pub show_time_delta: bool,
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
 }
@@ -75,6 +76,7 @@ impl App {
             connection_info: None,
             auto_scroll: false,
             horizontal_scroll: 0,
+            show_time_delta: false,
             skipped_bytes: 0,
             skipped_bytes_shared: None,
         }
@@ -110,6 +112,7 @@ impl App {
         self.filter = Filter::default();
         self.is_loading = true;
         self.horizontal_scroll = 0;
+        self.show_time_delta = false;
         self.skipped_bytes = 0;
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -467,6 +470,9 @@ impl App {
             KeyCode::Char('E') if self.screen == AppScreen::LogViewer => {
                 self.on_export();
             }
+            KeyCode::Char('t') if self.screen == AppScreen::LogViewer => {
+                self.show_time_delta = !self.show_time_delta;
+            }
             KeyCode::Char('j') | KeyCode::Down => self.on_down(),
             KeyCode::Char('k') | KeyCode::Up => self.on_up(),
             KeyCode::Left => {
@@ -565,6 +571,7 @@ impl App {
         self.is_loading = true;
         self.auto_scroll = true;
         self.horizontal_scroll = 0;
+        self.show_time_delta = false;
         self.connection_info = Some(addr.to_string());
 
         let (tx, rx) = std::sync::mpsc::channel();

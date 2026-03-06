@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Timestamp delta view** — Press `t` in Log Viewer to toggle the time display between absolute time and the time delta ($\Delta$t) from the previous message. Useful for diagnosing timeouts and race conditions.
+- **Export filtered logs** — Press `E` in Log Viewer to export currently filtered logs to a text file.
+
 ## [0.3.3] - 2026-03-05
 
 ### Added
