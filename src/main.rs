@@ -81,8 +81,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             // Load file(s). Set explorer to the parent of the first file.
             let first_path = &file_paths[0];
-            let parent = first_path.parent().unwrap_or(first_path);
-            if let Err(e) = app.load_directory(parent) {
+            let parent = first_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| env::current_dir().unwrap_or_default());
+            if let Err(e) = app.load_directory(&parent) {
                 app.error_message = Some(format!("Could not load directory: {}", e));
             }
             if app.error_message.is_none()

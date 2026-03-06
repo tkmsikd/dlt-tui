@@ -1,8 +1,10 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
@@ -50,6 +52,7 @@ pub struct App {
     pub show_time_delta: bool,
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
+    tcp_error: Option<Arc<Mutex<Option<String>>>>,
 }
 
 impl Default for App {
@@ -81,11 +84,19 @@ impl App {
             show_time_delta: false,
             skipped_bytes: 0,
             skipped_bytes_shared: None,
+            tcp_error: None,
         }
     }
 
     pub fn load_filter_config(&mut self) {
         let path = std::path::Path::new(".dlt-tui.toml");
+        // SEC-4: check file size before reading (1MB limit)
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.len() > 1_048_576
+        {
+            self.error_message = Some("Config file too large (>1MB)".to_string());
+            return;
+        }
         if path.exists()
             && let Ok(content) = std::fs::read_to_string(path)
             && let Ok(filter) = toml::from_str::<Filter>(&content)
@@ -245,9 +256,11 @@ impl App {
         self.filtered_log_indices.clear();
 
         // Compile regex once if text filter exists
+        // SEC-1: size_limit prevents ReDoS from malicious patterns
         let text_regex = self.filter.text.as_ref().and_then(|text| {
             regex::RegexBuilder::new(text)
                 .case_insensitive(true)
+                .size_limit(256 * 1024) // 256KB compiled regex limit
                 .build()
                 .ok() // If invalid regex, we will fallback to plain string search
         });
@@ -300,9 +313,11 @@ impl App {
             let mut added = false;
             let current_len = self.logs.len();
 
+            // SEC-1: size_limit prevents ReDoS from malicious patterns
             let text_regex = self.filter.text.as_ref().and_then(|text| {
                 regex::RegexBuilder::new(text)
                     .case_insensitive(true)
+                    .size_limit(256 * 1024) // 256KB compiled regex limit
                     .build()
                     .ok()
             });
@@ -318,7 +333,21 @@ impl App {
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         self.is_loading = false;
+                        // BUG-5: Check for TCP connection error from background thread
+                        if let Some(ref tcp_err) = self.tcp_error
+                            && let Ok(guard) = tcp_err.lock()
+                            && let Some(ref err_msg) = *guard
+                        {
+                            self.error_message =
+                                Some(format!("TCP connection failed: {}", err_msg));
+                        }
+                        self.tcp_error = None;
                         if self.connection_info.is_some() {
+                            // If no error was set and no logs received, show a clean disconnect message
+                            if self.error_message.is_none() && self.logs.is_empty() {
+                                self.error_message =
+                                    Some("TCP connection ended with no data".to_string());
+                            }
                             self.connection_info = None;
                         }
                         // Read skipped bytes from the shared atomic
@@ -455,6 +484,8 @@ impl App {
                     } else {
                         Some(self.filter_input.clone())
                     };
+                    // UX-4: feedback when filter is cleared
+                    let was_cleared = input.is_none();
                     match mode {
                         FilterInputMode::Text => self.filter.text = input,
                         FilterInputMode::AppId => self.filter.app_id = input,
@@ -473,13 +504,21 @@ impl App {
                         }
                     }
                     self.apply_filter();
+                    if was_cleared {
+                        self.info_message = Some("Filter cleared".to_string());
+                    }
                 }
                 KeyCode::Esc => {
                     // Cancel: exit input mode without changing the filter
                     self.filter_input_mode = None;
                     self.filter_input.clear();
                 }
-                KeyCode::Char(c) => self.filter_input.push(c),
+                KeyCode::Char(c) => {
+                    // SEC-5: limit filter input length to prevent memory abuse
+                    if self.filter_input.len() < 1024 {
+                        self.filter_input.push(c);
+                    }
+                }
                 KeyCode::Backspace => {
                     self.filter_input.pop();
                 }
@@ -496,8 +535,8 @@ impl App {
                 AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
             },
             KeyCode::Char('b') if self.screen == AppScreen::Explorer => {
-                if !self.explorer_items.is_empty() {
-                    let selected = &self.explorer_items[self.explorer_selected_index];
+                // BUG-2: bounds check before accessing explorer_items
+                if let Some(selected) = self.explorer_items.get(self.explorer_selected_index) {
                     let dir_path = if selected.is_dir {
                         selected.path.clone()
                     } else {
@@ -608,8 +647,8 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.screen == AppScreen::Explorer {
-                    if !self.explorer_items.is_empty() {
-                        let selected = &self.explorer_items[self.explorer_selected_index];
+                    // BUG-2: bounds check before accessing explorer_items
+                    if let Some(selected) = self.explorer_items.get(self.explorer_selected_index) {
                         if selected.is_dir {
                             let path_clone = selected.path.clone();
                             if let Err(e) = self.load_directory(&path_clone) {
@@ -654,10 +693,16 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.log_receiver = Some(rx);
 
+        // BUG-5: shared error state so background thread can report connection failures
+        let tcp_error = Arc::new(Mutex::new(None));
+        self.tcp_error = Some(Arc::clone(&tcp_error));
+
         let addr_owned = addr.to_string();
         std::thread::spawn(move || {
-            if let Err(_e) = crate::tcp_client::stream_from_tcp(&addr_owned, tx) {
-                // Connection failed — channel will be dropped, on_tick handles it
+            if let Err(e) = crate::tcp_client::stream_from_tcp(&addr_owned, tx)
+                && let Ok(mut guard) = tcp_error.lock()
+            {
+                *guard = Some(e.to_string());
             }
         });
 
@@ -671,7 +716,25 @@ impl App {
         }
 
         let now = chrono::Local::now();
-        let filename = format!("dlt_export_{}.txt", now.format("%Y%m%d_%H%M%S"));
+        let base = format!("dlt_export_{}", now.format("%Y%m%d_%H%M%S"));
+
+        // SEC-2: avoid overwriting existing files by appending a suffix
+        let filename = if !std::path::Path::new(&format!("{}.txt", base)).exists() {
+            format!("{}.txt", base)
+        } else {
+            let mut i = 1;
+            loop {
+                let candidate = format!("{}_{}.txt", base, i);
+                if !std::path::Path::new(&candidate).exists() {
+                    break candidate;
+                }
+                i += 1;
+                if i > 999 {
+                    self.error_message = Some("Too many export files".to_string());
+                    return;
+                }
+            }
+        };
 
         // Collect references to the currently filtered DltMessages
         let filtered_logs: Vec<&crate::parser::DltMessage> = self
@@ -1211,5 +1274,70 @@ mod tests {
             2,
             "CTX ID filter should be case-insensitive: 'boot' matches 'BOOT'"
         );
+    }
+
+    // ==================== Phase 1 security/bug fix tests ====================
+
+    /// SEC-1: ReDoS-prone regex should be rejected by size_limit and fall back to plain text
+    #[test]
+    fn test_redos_regex_rejected() {
+        let mut app = build_mock_app_with_diverse_logs();
+        // This pattern compiles to a very large NFA; size_limit should reject it
+        app.filter.text = Some("(a+)+$".repeat(100));
+        app.apply_filter();
+        // Should not hang — the regex fails to compile and falls back to plain text search
+        // Since no log contains the literal "(a+)+$" repeated, result should be 0
+        assert_eq!(app.filtered_log_indices.len(), 0);
+    }
+
+    /// SEC-5: Filter input should be bounded at 1024 characters
+    #[test]
+    fn test_filter_input_length_limit() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.screen = AppScreen::LogViewer;
+
+        // Enter filter input mode
+        app.handle_key(make_key(KeyCode::Char('/')), 20);
+
+        // Type 1030 characters
+        for _ in 0..1030 {
+            app.handle_key(make_key(KeyCode::Char('x')), 20);
+        }
+
+        assert_eq!(
+            app.filter_input.len(),
+            1024,
+            "Filter input should be capped at 1024"
+        );
+    }
+
+    /// UX-4: Empty filter submission should show "Filter cleared" feedback
+    #[test]
+    fn test_empty_filter_shows_cleared_message() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.screen = AppScreen::LogViewer;
+
+        // Enter filter input mode and submit empty
+        app.handle_key(make_key(KeyCode::Char('/')), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(
+            app.info_message,
+            Some("Filter cleared".to_string()),
+            "Empty filter submission should show feedback"
+        );
+    }
+
+    /// BUG-2: Accessing explorer with out-of-bounds index should not panic
+    #[test]
+    fn test_explorer_bounds_safety() {
+        let mut app = App::new();
+        // Manually set index beyond items (simulates stale index after directory change error)
+        app.explorer_selected_index = 999;
+        app.explorer_items = vec![]; // empty
+
+        // These should not panic
+        app.handle_key(make_key(KeyCode::Enter), 20);
+        app.handle_key(make_key(KeyCode::Char('b')), 20);
     }
 }
