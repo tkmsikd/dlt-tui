@@ -38,6 +38,7 @@ pub struct App {
     pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
     pub error_message: Option<String>,
+    pub info_message: Option<String>,
     pub should_quit: bool,
     pub log_receiver: Option<std::sync::mpsc::Receiver<DltMessage>>,
     pub is_loading: bool,
@@ -67,6 +68,7 @@ impl App {
             filter_input_mode: None,
             filter_input: String::new(),
             error_message: None,
+            info_message: None,
             should_quit: false,
             log_receiver: None,
             is_loading: false,
@@ -405,9 +407,10 @@ impl App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, page_size: usize) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        // Dismiss error on any key press
-        if self.error_message.is_some() {
+        // Dismiss error or info on any key press
+        if self.error_message.is_some() || self.info_message.is_some() {
             self.error_message = None;
+            self.info_message = None;
             return;
         }
 
@@ -461,6 +464,9 @@ impl App {
                 AppScreen::LogViewer => self.screen = AppScreen::Explorer,
                 AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
             },
+            KeyCode::Char('E') if self.screen == AppScreen::LogViewer => {
+                self.on_export();
+            }
             KeyCode::Char('j') | KeyCode::Down => self.on_down(),
             KeyCode::Char('k') | KeyCode::Up => self.on_up(),
             KeyCode::Left => {
@@ -572,6 +578,36 @@ impl App {
         });
 
         self.screen = AppScreen::LogViewer;
+    }
+
+    pub fn on_export(&mut self) {
+        if self.filtered_log_indices.is_empty() {
+            self.error_message = Some("No logs to export".to_string());
+            return;
+        }
+
+        let now = chrono::Local::now();
+        let filename = format!("dlt_export_{}.txt", now.format("%Y%m%d_%H%M%S"));
+
+        // Collect references to the currently filtered DltMessages
+        let filtered_logs: Vec<&crate::parser::DltMessage> = self
+            .filtered_log_indices
+            .iter()
+            .map(|&i| &self.logs[i])
+            .collect();
+
+        match crate::exporter::export_to_txt(&filtered_logs, &filename) {
+            Ok(_) => {
+                self.info_message = Some(format!(
+                    "Exported {} logs to {}",
+                    filtered_logs.len(),
+                    filename
+                ));
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Export failed: {}", e));
+            }
+        }
     }
 }
 

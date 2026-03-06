@@ -10,6 +10,7 @@ use crate::app::App;
 
 pub mod app;
 pub mod explorer;
+pub mod exporter;
 pub mod fs_reader;
 pub mod parser;
 pub mod tcp_client;

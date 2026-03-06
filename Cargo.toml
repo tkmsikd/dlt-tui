@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "visualization"]
 exclude = ["sample.dlt", "tests/generate_sample_dlt.rs"]
 
 [dependencies]
+chrono = "0.4.44"
 crossterm = "0.29.0"
 flate2 = "1.1.9"
 nom = "8.0.0"

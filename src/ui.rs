@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::app::{App, AppScreen};
 
-fn format_timestamp(us: u64) -> String {
+pub fn format_timestamp(us: u64) -> String {
     let total_secs = us / 1_000_000;
     let micros = us % 1_000_000;
     let hours = (total_secs / 3600) % 24;
@@ -196,6 +196,11 @@ pub fn draw(f: &mut Frame, app: &App) {
             format!("ERROR: {} | [Press any key to dismiss]", err),
             Style::default().bg(Color::Red).fg(Color::White),
         )
+    } else if let Some(ref info) = app.info_message {
+        (
+            format!("INFO: {} | [Press any key to dismiss]", info),
+            Style::default().bg(Color::Blue).fg(Color::White),
+        )
     } else {
         let mut string = match app.screen {
             AppScreen::Explorer => format!(
@@ -239,7 +244,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear",
+                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (E) Export",
                     conn_str,
                     tail_str,
                     recovered_str,
