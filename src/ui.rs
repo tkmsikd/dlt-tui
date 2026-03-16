@@ -101,23 +101,33 @@ pub fn draw(f: &mut Frame, app: &App) {
 
                     let time_str = if app.show_time_delta {
                         if i == 0 {
-                            "+0.000000s".to_string()
+                            // BUG-3: if timestamp is 0 (no storage header), show N/A
+                            if log.timestamp_us == 0 {
+                                "N/A".to_string()
+                            } else {
+                                "+0.000000s".to_string()
+                            }
                         } else {
                             let prev_idx = app.filtered_log_indices[i - 1];
                             let prev_log = &app.logs[prev_idx];
-                            let is_negative = log.timestamp_us < prev_log.timestamp_us;
-                            let diff_abs = if is_negative {
-                                prev_log.timestamp_us - log.timestamp_us
+                            // BUG-3: if either timestamp is 0, delta is meaningless
+                            if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
+                                "N/A".to_string()
                             } else {
-                                log.timestamp_us - prev_log.timestamp_us
-                            };
-                            let sign = if is_negative { "-" } else { "+" };
-                            format!(
-                                "{}{}.{:06}s",
-                                sign,
-                                diff_abs / 1_000_000,
-                                diff_abs % 1_000_000
-                            )
+                                let is_negative = log.timestamp_us < prev_log.timestamp_us;
+                                let diff_abs = if is_negative {
+                                    prev_log.timestamp_us - log.timestamp_us
+                                } else {
+                                    log.timestamp_us - prev_log.timestamp_us
+                                };
+                                let sign = if is_negative { "-" } else { "+" };
+                                format!(
+                                    "{}{}.{:06}s",
+                                    sign,
+                                    diff_abs / 1_000_000,
+                                    diff_abs % 1_000_000
+                                )
+                            }
                         }
                     } else {
                         format_timestamp(log.timestamp_us)
@@ -278,8 +288,9 @@ pub fn draw(f: &mut Frame, app: &App) {
                     String::new()
                 };
 
+                // UX-2: shortened status bar to fit ~80 columns
                 format!(
-                    "Mode: Viewer | {}{}{}{}Logs: {}/{} | (< >) Scroll Text | (^f/^b) Page | (/) Text | (l) Level | (a) APP | (c) CTX | (C) Clear | (S) Save | (L) Load | (t) Delta | (E) Export",
+                    "Viewer | {}{}{}{}Logs: {}/{} | /text l=lvl a=app c=ctx C=clr S/L=cfg t=Δ E=exp",
                     conn_str,
                     tail_str,
                     recovered_str,

@@ -53,6 +53,9 @@ pub struct App {
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
     tcp_error: Option<Arc<Mutex<Option<String>>>>,
+    /// BUG-1: Generation counter incremented on every apply_filter() call.
+    /// on_tick() only appends new indices if filter_generation hasn't changed.
+    filter_generation: u64,
 }
 
 impl Default for App {
@@ -85,6 +88,7 @@ impl App {
             skipped_bytes: 0,
             skipped_bytes_shared: None,
             tcp_error: None,
+            filter_generation: 0,
         }
     }
 
@@ -255,6 +259,9 @@ impl App {
     pub fn apply_filter(&mut self) {
         self.filtered_log_indices.clear();
 
+        // BUG-1: bump generation so on_tick won't append with stale filter
+        self.filter_generation = self.filter_generation.wrapping_add(1);
+
         // Compile regex once if text filter exists
         // SEC-1: size_limit prevents ReDoS from malicious patterns
         let text_regex = self.filter.text.as_ref().and_then(|text| {
@@ -312,6 +319,7 @@ impl App {
         if let Some(rx) = &self.log_receiver {
             let mut added = false;
             let current_len = self.logs.len();
+            let current_gen = self.filter_generation;
 
             // SEC-1: size_limit prevents ReDoS from malicious patterns
             let text_regex = self.filter.text.as_ref().and_then(|text| {
@@ -362,10 +370,15 @@ impl App {
             }
 
             if added {
-                for idx in current_len..self.logs.len() {
-                    let log = &self.logs[idx];
-                    if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
-                        self.filtered_log_indices.push(idx);
+                // BUG-1: Only append incrementally if filter hasn't been reapplied
+                // since we captured current_gen. If it changed, apply_filter()
+                // already rebuilt the full index, so skip incremental append.
+                if self.filter_generation == current_gen {
+                    for idx in current_len..self.logs.len() {
+                        let log = &self.logs[idx];
+                        if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
+                            self.filtered_log_indices.push(idx);
+                        }
                     }
                 }
 
@@ -532,6 +545,7 @@ impl App {
             KeyCode::Char('q') => match self.screen {
                 AppScreen::Explorer => self.on_key_q(),
                 AppScreen::LogViewer => self.screen = AppScreen::Explorer,
+                // UX-6: q on LogDetail goes back to LogViewer
                 AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
             },
             KeyCode::Char('b') if self.screen == AppScreen::Explorer => {
@@ -669,7 +683,10 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                if self.screen == AppScreen::LogViewer {
+                // UX-1: Esc consistently means "go back" — on Explorer, quit the app
+                if self.screen == AppScreen::Explorer {
+                    self.on_key_q();
+                } else if self.screen == AppScreen::LogViewer {
                     self.screen = AppScreen::Explorer;
                 } else if self.screen == AppScreen::LogDetail {
                     self.screen = AppScreen::LogViewer;
@@ -1339,5 +1356,40 @@ mod tests {
         // These should not panic
         app.handle_key(make_key(KeyCode::Enter), 20);
         app.handle_key(make_key(KeyCode::Char('b')), 20);
+    }
+
+    /// UX-1: Esc on Explorer should quit the app
+    #[test]
+    fn test_esc_on_explorer_quits() {
+        let mut app = App::new();
+        assert_eq!(app.screen, AppScreen::Explorer);
+        assert!(!app.should_quit);
+
+        app.handle_key(make_key(KeyCode::Esc), 20);
+        assert!(app.should_quit, "Esc on Explorer should quit the app");
+    }
+
+    /// UX-1: Esc on LogViewer goes back to Explorer
+    #[test]
+    fn test_esc_on_log_viewer_goes_back() {
+        let mut app = build_mock_app_with_logs(5);
+        app.screen = AppScreen::LogViewer;
+
+        app.handle_key(make_key(KeyCode::Esc), 20);
+        assert_eq!(app.screen, AppScreen::Explorer);
+    }
+
+    /// BUG-1: apply_filter bumps filter_generation
+    #[test]
+    fn test_filter_generation_increments() {
+        let mut app = build_mock_app_with_diverse_logs();
+        let gen_before = app.filter_generation;
+
+        app.apply_filter();
+        assert_eq!(
+            app.filter_generation,
+            gen_before + 1,
+            "apply_filter should increment filter_generation"
+        );
     }
 }
