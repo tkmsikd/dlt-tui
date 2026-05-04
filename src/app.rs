@@ -1,5 +1,6 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -322,6 +323,35 @@ impl App {
                 idx,
             )
         });
+    }
+
+    pub fn source_counts(&self) -> Vec<(String, usize)> {
+        let mut counts = BTreeMap::new();
+        for &idx in &self.filtered_log_indices {
+            let source = self.logs[idx].source_name().to_string();
+            *counts.entry(source).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
+    }
+
+    pub fn ctx_counts(&self) -> Vec<(String, usize)> {
+        let mut counts = BTreeMap::new();
+        for &idx in &self.filtered_log_indices {
+            let ctx = self.logs[idx]
+                .message
+                .ctid
+                .as_deref()
+                .unwrap_or("-")
+                .to_string();
+            *counts.entry(ctx).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
+    }
+
+    pub fn selected_entry(&self) -> Option<&LogEntry> {
+        self.filtered_log_indices
+            .get(self.logs_selected_index)
+            .map(|&idx| &self.logs[idx])
     }
 
     pub fn on_home(&mut self) {
@@ -985,6 +1015,24 @@ mod tests {
         let entry = mock_entry(1_000, "payload", Some("/tmp/logs/ctx_a.dlt"), 0);
 
         assert_eq!(entry.source_name(), "ctx_a.dlt");
+    }
+
+    #[test]
+    fn test_source_and_ctx_counts_use_filtered_logs() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.logs
+            .push(mock_entry(1_000, "keep one", Some("ctx_a.dlt"), 0));
+        app.logs
+            .push(mock_entry(2_000, "drop me", Some("ctx_b.dlt"), 1));
+        app.logs
+            .push(mock_entry(3_000, "keep two", Some("ctx_a.dlt"), 0));
+        app.filter.text = Some("keep".to_string());
+
+        app.apply_filter();
+
+        assert_eq!(app.source_counts(), vec![("ctx_a.dlt".to_string(), 2)]);
+        assert_eq!(app.ctx_counts(), vec![("CTX1".to_string(), 2)]);
     }
 
     // ==================== Page scrolling tests ====================

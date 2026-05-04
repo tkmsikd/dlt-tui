@@ -52,6 +52,22 @@ pub fn draw(f: &mut Frame, app: &App) {
             f.render_stateful_widget(list, chunks[0], &mut state);
         }
         AppScreen::LogViewer => {
+            let viewer_chunks = if chunks[0].width >= 100 {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(30), Constraint::Min(40)].as_ref())
+                    .split(chunks[0])
+            } else {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(0), Constraint::Min(20)].as_ref())
+                    .split(chunks[0])
+            };
+
+            if viewer_chunks[0].width > 0 {
+                draw_context_sidebar(f, app, viewer_chunks[0]);
+            }
+
             let time_header = if app.show_time_delta {
                 "Delta Time"
             } else {
@@ -180,7 +196,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             // Note: ratatui::widgets::Table uses TableState instead of ListState
             let mut state = ratatui::widgets::TableState::default();
             state.select(Some(app.logs_selected_index));
-            f.render_stateful_widget(table, chunks[0], &mut state);
+            f.render_stateful_widget(table, viewer_chunks[1], &mut state);
         }
         AppScreen::LogDetail => {
             if let Some(&idx) = app.filtered_log_indices.get(app.logs_selected_index) {
@@ -344,6 +360,49 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(status, chunks[1]);
 }
 
+fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let selected_source = app.selected_entry().map(|entry| entry.source_name());
+    let selected_ctx = app
+        .selected_entry()
+        .and_then(|entry| entry.message.ctid.as_deref())
+        .unwrap_or("-");
+
+    let source_items = app.source_counts().into_iter().map(|(source, count)| {
+        let marker = if Some(source.as_str()) == selected_source {
+            ">"
+        } else {
+            " "
+        };
+        ListItem::new(format!("{} {:>5} {}", marker, count, source))
+    });
+
+    let ctx_items = app.ctx_counts().into_iter().map(|(ctx, count)| {
+        let marker = if ctx == selected_ctx { ">" } else { " " };
+        ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
+    });
+
+    let sidebar_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(area);
+
+    let sources = List::new(source_items).block(
+        Block::default()
+            .title("Sources")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    f.render_widget(sources, sidebar_chunks[0]);
+
+    let contexts = List::new(ctx_items).block(
+        Block::default()
+            .title("Contexts")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    f.render_widget(contexts, sidebar_chunks[1]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +480,9 @@ mod tests {
         );
         assert!(text.contains("Level"), "Should show column header");
         assert!(text.contains("Payload"), "Should show Payload column");
+        assert!(text.contains("Sources"), "Should show source sidebar");
+        assert!(text.contains("Contexts"), "Should show context sidebar");
+        assert!(text.contains("diag_can1.dlt"), "Should show source file");
         assert!(text.contains("ECU1"), "Should show ECU ID");
         assert!(text.contains("DIAG"), "Should show APP ID");
         assert!(text.contains("CAN bus timeout"), "Should show payload text");
