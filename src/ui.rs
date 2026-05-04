@@ -16,6 +16,32 @@ pub fn format_timestamp(us: u64) -> String {
     format!("{:02}:{:02}:{:02}.{:06}", hours, minutes, seconds, micros)
 }
 
+fn ctx_color(ctx: &str) -> Color {
+    const PALETTE: [Color; 12] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::LightBlue,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::Indexed(208),
+        Color::Indexed(141),
+        Color::Indexed(75),
+    ];
+
+    if ctx == "-" || ctx.is_empty() {
+        return Color::Gray;
+    }
+
+    let hash = ctx.bytes().fold(0usize, |acc, byte| {
+        acc.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    PALETTE[hash % PALETTE.len()]
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -164,7 +190,9 @@ pub fn draw(f: &mut Frame, app: &App) {
                         ratatui::widgets::Cell::from(time_str),
                         ratatui::widgets::Cell::from(log.ecu_id.as_str()),
                         ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
-                        ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
+                        ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")).style(
+                            Style::default().fg(ctx_color(log.ctid.as_deref().unwrap_or("-"))),
+                        ),
                         ratatui::widgets::Cell::from(entry.source_name()),
                         ratatui::widgets::Cell::from(payload_display),
                     ];
@@ -379,6 +407,7 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let ctx_items = app.ctx_counts().into_iter().map(|(ctx, count)| {
         let marker = if ctx == selected_ctx { ">" } else { " " };
         ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
+            .style(Style::default().fg(ctx_color(&ctx)))
     });
 
     let sidebar_chunks = Layout::default()
