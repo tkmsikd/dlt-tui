@@ -330,8 +330,12 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     let wsid = (htyp & 0x08) != 0;
     let wtms = (htyp & 0x10) != 0;
 
+    if len < 4 {
+        return Err(ParseError::InvalidHeader);
+    }
+
     // Calculate expected bytes after the 4-byte standard header base
-    let expected_remaining = (len as usize).saturating_sub(4);
+    let expected_remaining = len as usize - 4;
     if input.len() < expected_remaining {
         return Err(ParseError::Incomplete(expected_remaining - input.len()));
     }
@@ -768,6 +772,14 @@ mod tests {
             ParseError::Incomplete(_) => {}
             _ => panic!("Expected ParseError::Incomplete, got {:?}", err),
         }
+    }
+
+    #[test]
+    fn test_parse_rejects_len_smaller_than_standard_header() {
+        let data = [0x20, 0x00, 0x00, 0x03];
+
+        let err = parse_dlt_message(&data).unwrap_err();
+        assert_eq!(err, ParseError::InvalidHeader);
     }
 
     #[test]

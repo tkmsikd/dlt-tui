@@ -1,6 +1,10 @@
 use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc::Sender;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+    mpsc::Sender,
+};
 use std::time::Duration;
 
 use crate::parser::{self, DltMessage};
@@ -24,8 +28,29 @@ pub fn stream_from_tcp(addr: &str, tx: Sender<DltMessage>) -> io::Result<()> {
 /// Reads DLT messages from any `Read` source and sends them through the channel.
 /// Handles both formats: with and without Storage Header.
 pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io::Result<()> {
+    stream_from_reader_inner(&mut reader, tx, None)
+}
+
+/// Like `stream_from_reader`, but also reports bytes skipped during parser recovery.
+pub fn stream_from_reader_with_skipped<R: Read>(
+    mut reader: R,
+    tx: Sender<DltMessage>,
+    skipped_bytes: Arc<AtomicUsize>,
+) -> io::Result<()> {
+    stream_from_reader_inner(&mut reader, tx, Some(skipped_bytes))
+}
+
+fn stream_from_reader_inner<R: Read>(
+    reader: &mut R,
+    tx: Sender<DltMessage>,
+    skipped_bytes: Option<Arc<AtomicUsize>>,
+) -> io::Result<()> {
     let mut buffer = Vec::with_capacity(64 * 1024);
     let mut read_buf = [0u8; 8192];
+    let mut total_skipped = skipped_bytes
+        .as_ref()
+        .map(|skipped_bytes| skipped_bytes.load(Ordering::Relaxed))
+        .unwrap_or(0);
 
     loop {
         match reader.read(&mut read_buf) {
@@ -67,10 +92,17 @@ pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io:
                 | Err(parser::ParseError::Unknown) => {
                     // Try to find next DLT marker or skip one byte
                     if let Some(pos) = parser::find_next_sync(&remaining[1..]) {
-                        consumed += 1 + pos;
+                        let skipped = 1 + pos;
+                        consumed += skipped;
+                        total_skipped += skipped;
                     } else {
-                        consumed += remaining.len().saturating_sub(3);
+                        let skipped = remaining.len().saturating_sub(3);
+                        consumed += skipped;
+                        total_skipped += skipped;
                         break;
+                    }
+                    if let Some(skipped_bytes) = &skipped_bytes {
+                        skipped_bytes.store(total_skipped, Ordering::Relaxed);
                     }
                 }
             }
@@ -86,11 +118,18 @@ pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io:
             let search_start = buffer.len() / 2;
             if let Some(sync_pos) = parser::find_next_sync(&buffer[search_start..]) {
                 // Found a potential message start — discard everything before it
-                buffer.drain(..search_start + sync_pos);
+                let skipped = search_start + sync_pos;
+                buffer.drain(..skipped);
+                total_skipped += skipped;
             } else {
                 // No sync found — keep only the last 4KB for partial message recovery
                 let keep = 4096.min(buffer.len());
-                buffer.drain(..buffer.len() - keep);
+                let skipped = buffer.len() - keep;
+                buffer.drain(..skipped);
+                total_skipped += skipped;
+            }
+            if let Some(skipped_bytes) = &skipped_bytes {
+                skipped_bytes.store(total_skipped, Ordering::Relaxed);
             }
         }
     }

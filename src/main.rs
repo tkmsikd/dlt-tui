@@ -57,9 +57,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Setup terminal (raw mode) — only after argument validation passes
+    let mut cleanup = TerminalCleanup::default();
     enable_raw_mode()?;
+    cleanup.raw_mode = true;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    cleanup.alt_screen = true;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -107,12 +110,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+    cleanup.disarm();
 
     if let Err(err) = res {
         println!("{:?}", err)
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct TerminalCleanup {
+    raw_mode: bool,
+    alt_screen: bool,
+}
+
+impl TerminalCleanup {
+    fn disarm(&mut self) {
+        self.raw_mode = false;
+        self.alt_screen = false;
+    }
+}
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        if self.raw_mode {
+            let _ = disable_raw_mode();
+        }
+        if self.alt_screen {
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        }
+    }
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> io::Result<()> {

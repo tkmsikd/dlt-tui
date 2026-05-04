@@ -162,24 +162,20 @@ impl App {
         self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
         std::thread::spawn(move || {
-            let mut total_skipped = 0;
             for path in paths {
-                let mut stream = match crate::fs_reader::open_dlt_stream(&path) {
+                let stream = match crate::fs_reader::open_dlt_stream(&path) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                let mut buffer = Vec::new();
-                if std::io::Read::read_to_end(&mut stream, &mut buffer).is_err() {
-                    continue;
-                }
 
-                let (messages, skipped) = crate::parser::parse_all_messages(&buffer);
-                total_skipped += skipped;
-                skipped_shared.store(total_skipped, Ordering::Relaxed);
-                for msg in messages {
-                    if tx.send(msg).is_err() {
-                        return; // Receiver dropped (app quit)
-                    }
+                if crate::tcp_client::stream_from_reader_with_skipped(
+                    stream,
+                    tx.clone(),
+                    Arc::clone(&skipped_shared),
+                )
+                .is_err()
+                {
+                    continue;
                 }
             }
         });
@@ -321,15 +317,6 @@ impl App {
             let current_len = self.logs.len();
             let current_gen = self.filter_generation;
 
-            // SEC-1: size_limit prevents ReDoS from malicious patterns
-            let text_regex = self.filter.text.as_ref().and_then(|text| {
-                regex::RegexBuilder::new(text)
-                    .case_insensitive(true)
-                    .size_limit(256 * 1024) // 256KB compiled regex limit
-                    .build()
-                    .ok()
-            });
-
             loop {
                 match rx.try_recv() {
                     Ok(msg) => {
@@ -370,6 +357,14 @@ impl App {
             }
 
             if added {
+                let text_regex = self.filter.text.as_ref().and_then(|text| {
+                    regex::RegexBuilder::new(text)
+                        .case_insensitive(true)
+                        .size_limit(256 * 1024)
+                        .build()
+                        .ok()
+                });
+
                 // BUG-1: Only append incrementally if filter hasn't been reapplied
                 // since we captured current_gen. If it changed, apply_filter()
                 // already rebuilt the full index, so skip incremental append.
@@ -526,12 +521,11 @@ impl App {
                     self.filter_input_mode = None;
                     self.filter_input.clear();
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if self.filter_input.len() < 1024 => {
                     // SEC-5: limit filter input length to prevent memory abuse
-                    if self.filter_input.len() < 1024 {
-                        self.filter_input.push(c);
-                    }
+                    self.filter_input.push(c);
                 }
+                KeyCode::Char(_) => {}
                 KeyCode::Backspace => {
                     self.filter_input.pop();
                 }
