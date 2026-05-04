@@ -31,11 +31,36 @@ pub enum FilterInputMode {
     MinLevel,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct LogEntry {
+    pub message: DltMessage,
+    pub source_file: Option<PathBuf>,
+    pub source_index: usize,
+}
+
+impl LogEntry {
+    pub fn new(message: DltMessage, source_file: Option<PathBuf>, source_index: usize) -> Self {
+        Self {
+            message,
+            source_file,
+            source_index,
+        }
+    }
+
+    pub fn source_name(&self) -> &str {
+        self.source_file
+            .as_deref()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("-")
+    }
+}
+
 pub struct App {
     pub screen: AppScreen,
     pub explorer_items: Vec<FileEntry>,
     pub explorer_selected_index: usize,
-    pub logs: Vec<DltMessage>,
+    pub logs: Vec<LogEntry>,
     pub filtered_log_indices: Vec<usize>,
     pub logs_selected_index: usize,
     pub filter: Filter,
@@ -44,7 +69,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub info_message: Option<String>,
     pub should_quit: bool,
-    pub log_receiver: Option<std::sync::mpsc::Receiver<DltMessage>>,
+    pub log_receiver: Option<std::sync::mpsc::Receiver<LogEntry>>,
     pub is_loading: bool,
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
@@ -162,19 +187,28 @@ impl App {
         self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
         std::thread::spawn(move || {
-            for path in paths {
+            for (source_index, path) in paths.into_iter().enumerate() {
                 let stream = match crate::fs_reader::open_dlt_stream(&path) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
 
-                if crate::tcp_client::stream_from_reader_with_skipped(
+                let source_file = path.clone();
+                let send_result = crate::tcp_client::stream_from_reader_with_handler(
                     stream,
-                    tx.clone(),
                     Arc::clone(&skipped_shared),
+                    |message| {
+                        tx.send(LogEntry::new(
+                            message,
+                            Some(source_file.clone()),
+                            source_index,
+                        ))
+                        .is_ok()
+                    },
                 )
-                .is_err()
-                {
+                .is_err();
+
+                if send_result {
                     continue;
                 }
             }
@@ -269,12 +303,25 @@ impl App {
         });
 
         for (idx, log) in self.logs.iter().enumerate() {
-            if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
+            if Self::check_log_against_filter(&log.message, &self.filter, text_regex.as_ref()) {
                 self.filtered_log_indices.push(idx);
             }
         }
 
+        self.sort_filtered_indices();
         self.logs_selected_index = 0;
+    }
+
+    fn sort_filtered_indices(&mut self) {
+        self.filtered_log_indices.sort_by_key(|&idx| {
+            let entry = &self.logs[idx];
+            (
+                entry.message.timestamp_us == 0,
+                entry.message.timestamp_us,
+                entry.source_index,
+                idx,
+            )
+        });
     }
 
     pub fn on_home(&mut self) {
@@ -370,11 +417,12 @@ impl App {
                 // already rebuilt the full index, so skip incremental append.
                 if self.filter_generation == current_gen {
                     for idx in current_len..self.logs.len() {
-                        let log = &self.logs[idx];
+                        let log = &self.logs[idx].message;
                         if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
                             self.filtered_log_indices.push(idx);
                         }
                     }
+                    self.sort_filtered_indices();
                 }
 
                 // Auto-scroll: keep cursor at the end when in tail mode
@@ -710,7 +758,10 @@ impl App {
 
         let addr_owned = addr.to_string();
         std::thread::spawn(move || {
-            if let Err(e) = crate::tcp_client::stream_from_tcp(&addr_owned, tx)
+            if let Err(e) =
+                crate::tcp_client::stream_from_tcp_with_handler(&addr_owned, |message| {
+                    tx.send(LogEntry::new(message, None, 0)).is_ok()
+                })
                 && let Ok(mut guard) = tcp_error.lock()
             {
                 *guard = Some(e.to_string());
@@ -751,7 +802,7 @@ impl App {
         let filtered_logs: Vec<&crate::parser::DltMessage> = self
             .filtered_log_indices
             .iter()
-            .map(|&i| &self.logs[i])
+            .map(|&i| &self.logs[i].message)
             .collect();
 
         match crate::exporter::export_to_txt(&filtered_logs, &filename) {
@@ -803,18 +854,43 @@ mod tests {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
         for i in 0..count {
-            app.logs.push(DltMessage {
-                timestamp_us: 1000 + i as u64,
-                ecu_id: format!("ECU{}", i),
-                apid: None,
-                ctid: None,
-                log_level: None,
-                payload_text: format!("Log message {}", i),
-                payload_raw: format!("Log message {}", i).into_bytes(),
-            });
+            app.logs.push(LogEntry::new(
+                DltMessage {
+                    timestamp_us: 1000 + i as u64,
+                    ecu_id: format!("ECU{}", i),
+                    apid: None,
+                    ctid: None,
+                    log_level: None,
+                    payload_text: format!("Log message {}", i),
+                    payload_raw: format!("Log message {}", i).into_bytes(),
+                },
+                None,
+                0,
+            ));
         }
         app.apply_filter();
         app
+    }
+
+    fn mock_entry(
+        timestamp_us: u64,
+        payload_text: &str,
+        source_file: Option<&str>,
+        source_index: usize,
+    ) -> LogEntry {
+        LogEntry::new(
+            DltMessage {
+                timestamp_us,
+                ecu_id: "ECU1".to_string(),
+                apid: Some("APP1".to_string()),
+                ctid: Some("CTX1".to_string()),
+                log_level: Some(crate::parser::LogLevel::Info),
+                payload_text: payload_text.to_string(),
+                payload_raw: payload_text.as_bytes().to_vec(),
+            },
+            source_file.map(PathBuf::from),
+            source_index,
+        )
     }
 
     #[test]
@@ -881,6 +957,34 @@ mod tests {
 
         app.on_end();
         assert_eq!(app.logs_selected_index, 4);
+    }
+
+    #[test]
+    fn test_apply_filter_orders_logs_by_timestamp_across_sources() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.logs
+            .push(mock_entry(3_000, "third", Some("ctx_a.dlt"), 0));
+        app.logs
+            .push(mock_entry(1_000, "first", Some("ctx_b.dlt"), 1));
+        app.logs
+            .push(mock_entry(2_000, "second", Some("ctx_a.dlt"), 0));
+
+        app.apply_filter();
+
+        let ordered_payloads: Vec<&str> = app
+            .filtered_log_indices
+            .iter()
+            .map(|&idx| app.logs[idx].message.payload_text.as_str())
+            .collect();
+        assert_eq!(ordered_payloads, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn test_log_entry_source_name_uses_file_name() {
+        let entry = mock_entry(1_000, "payload", Some("/tmp/logs/ctx_a.dlt"), 0);
+
+        assert_eq!(entry.source_name(), "ctx_a.dlt");
     }
 
     // ==================== Page scrolling tests ====================
@@ -1051,15 +1155,19 @@ mod tests {
         ];
 
         for (i, (ecu, apid, ctid, level, text)) in entries.into_iter().enumerate() {
-            app.logs.push(DltMessage {
-                timestamp_us: 1000 + i as u64,
-                ecu_id: ecu.to_string(),
-                apid: apid.map(|s| s.to_string()),
-                ctid: ctid.map(|s| s.to_string()),
-                log_level: level,
-                payload_text: text.to_string(),
-                payload_raw: text.as_bytes().to_vec(),
-            });
+            app.logs.push(LogEntry::new(
+                DltMessage {
+                    timestamp_us: 1000 + i as u64,
+                    ecu_id: ecu.to_string(),
+                    apid: apid.map(|s| s.to_string()),
+                    ctid: ctid.map(|s| s.to_string()),
+                    log_level: level,
+                    payload_text: text.to_string(),
+                    payload_raw: text.as_bytes().to_vec(),
+                },
+                None,
+                0,
+            ));
         }
         app.apply_filter();
         app
@@ -1134,7 +1242,7 @@ mod tests {
         app.apply_filter();
         assert_eq!(app.filtered_log_indices.len(), 1); // Only "CAN bus timeout"
         assert_eq!(
-            app.logs[app.filtered_log_indices[0]].payload_text,
+            app.logs[app.filtered_log_indices[0]].message.payload_text,
             "CAN bus timeout on channel 1"
         );
     }

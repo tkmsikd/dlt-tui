@@ -19,6 +19,7 @@ Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over
 | -------------------------------------- | ----------------------------------------------------------- |
 | dlt-viewer requires a desktop GUI      | Works in any terminal — SSH, CI runners, containers         |
 | Opening multi-GB DLT files is slow     | Async streaming parser — starts displaying before full load |
+| Context logs are split across files    | Merges multi-file loads into one timestamp-ordered timeline |
 | Finding the right log is tedious       | Instant regex search + compound filters (Level × APP × CTX) |
 | Compressed logs need manual extraction | Transparently reads `.dlt`, `.dlt.gz`, and `.dlt.zip`       |
 | Mouse-heavy workflows slow you down    | Vim-style navigation — hands never leave the keyboard       |
@@ -26,7 +27,8 @@ Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over
 ## Features
 
 - **Built-in File Explorer** — Browse directories and open files without leaving the TUI
-- **Log Table View** — ECU ID, APP ID, CTX ID, Log Level, Timestamp, and Payload at a glance
+- **Unified Timeline View** — Load many DLT files and inspect them together in timestamp order
+- **Log Table View** — ECU ID, APP ID, CTX ID, Source file, Log Level, Timestamp, and Payload at a glance
 - **Log Detail and Hex Dump** — Inspect raw payload bytes for deep protocol analysis
 - **Color-coded Log Levels** — Fatal (red), Error (light red), Warn (yellow), Info (green), Debug (blue), Verbose (gray)
 - **Real-time Filtering** — Stack multiple filters to isolate exactly what you need:
@@ -64,7 +66,7 @@ dlt-tui
 # Open a specific directory
 dlt-tui /path/to/log/directory/
 
-# Directly open one or multiple DLT files
+# Directly open one or multiple DLT files as a unified timeline
 dlt-tui /path/to/log1.dlt /path/to/log2.dlt.gz
 
 # Connect to a running dlt-daemon over TCP
@@ -163,6 +165,7 @@ Stack filters to isolate exactly what you need:
 - [ ] Bookmarking and log annotation
 - [x] Saved filter configurations (`.dlt-tui.toml`)
 - [x] Multi-file / directory batch loading
+- [x] Unified timestamp timeline across loaded files
 - [x] Timestamp delta display between messages
 - [ ] DLT lifecycle and session tracking
 - [x] Export filtered logs to file

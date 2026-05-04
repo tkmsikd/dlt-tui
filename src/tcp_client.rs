@@ -16,19 +16,27 @@ const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB — prevents OOM from u
 /// The connection runs on the calling thread (intended to be spawned in a background thread).
 /// Times out after 5 seconds if the host is unreachable.
 pub fn stream_from_tcp(addr: &str, tx: Sender<DltMessage>) -> io::Result<()> {
+    stream_from_tcp_with_handler(addr, |msg| tx.send(msg).is_ok())
+}
+
+/// Connects to a dlt-daemon TCP socket and streams parsed messages to a handler.
+pub fn stream_from_tcp_with_handler<F>(addr: &str, on_message: F) -> io::Result<()>
+where
+    F: FnMut(DltMessage) -> bool,
+{
     let socket_addr = addr
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid address"))?;
     let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-    stream_from_reader(stream, tx)
+    stream_from_reader_inner(stream, None, on_message)
 }
 
 /// Reads DLT messages from any `Read` source and sends them through the channel.
 /// Handles both formats: with and without Storage Header.
 pub fn stream_from_reader<R: Read>(mut reader: R, tx: Sender<DltMessage>) -> io::Result<()> {
-    stream_from_reader_inner(&mut reader, tx, None)
+    stream_from_reader_inner(&mut reader, None, |msg| tx.send(msg).is_ok())
 }
 
 /// Like `stream_from_reader`, but also reports bytes skipped during parser recovery.
@@ -37,14 +45,30 @@ pub fn stream_from_reader_with_skipped<R: Read>(
     tx: Sender<DltMessage>,
     skipped_bytes: Arc<AtomicUsize>,
 ) -> io::Result<()> {
-    stream_from_reader_inner(&mut reader, tx, Some(skipped_bytes))
+    stream_from_reader_inner(&mut reader, Some(skipped_bytes), |msg| tx.send(msg).is_ok())
 }
 
-fn stream_from_reader_inner<R: Read>(
-    reader: &mut R,
-    tx: Sender<DltMessage>,
+/// Streams messages to a caller-provided handler.
+/// Returning `false` from the handler stops parsing cleanly.
+pub fn stream_from_reader_with_handler<R: Read, F>(
+    mut reader: R,
+    skipped_bytes: Arc<AtomicUsize>,
+    on_message: F,
+) -> io::Result<()>
+where
+    F: FnMut(DltMessage) -> bool,
+{
+    stream_from_reader_inner(&mut reader, Some(skipped_bytes), on_message)
+}
+
+fn stream_from_reader_inner<R: Read, F>(
+    mut reader: R,
     skipped_bytes: Option<Arc<AtomicUsize>>,
-) -> io::Result<()> {
+    mut on_message: F,
+) -> io::Result<()>
+where
+    F: FnMut(DltMessage) -> bool,
+{
     let mut buffer = Vec::with_capacity(64 * 1024);
     let mut read_buf = [0u8; 8192];
     let mut total_skipped = skipped_bytes
@@ -78,8 +102,7 @@ fn stream_from_reader_inner<R: Read>(
             match parser::parse_dlt_message(remaining) {
                 Ok((leftover, msg)) => {
                     consumed += remaining.len() - leftover.len();
-                    if tx.send(msg).is_err() {
-                        // Receiver dropped (app quit)
+                    if !on_message(msg) {
                         return Ok(());
                     }
                 }

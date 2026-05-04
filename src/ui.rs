@@ -57,7 +57,15 @@ pub fn draw(f: &mut Frame, app: &App) {
             } else {
                 "Time"
             };
-            let cols = ["Level", time_header, "ECU", "APP", "CTX", "Payload"];
+            let cols = [
+                "Level",
+                time_header,
+                "ECU",
+                "APP",
+                "CTX",
+                "Source",
+                "Payload",
+            ];
             let header_cells = cols
                 .iter()
                 .map(|h| ratatui::widgets::Cell::from(*h).style(Style::default().fg(Color::Cyan)));
@@ -72,7 +80,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .iter()
                 .enumerate()
                 .map(|(i, &idx)| {
-                    let log = &app.logs[idx];
+                    let entry = &app.logs[idx];
+                    let log = &entry.message;
                     let (level_str, level_color) = match &log.log_level {
                         Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
                         Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
@@ -109,7 +118,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                             }
                         } else {
                             let prev_idx = app.filtered_log_indices[i - 1];
-                            let prev_log = &app.logs[prev_idx];
+                            let prev_log = &app.logs[prev_idx].message;
                             // BUG-3: if either timestamp is 0, delta is meaningless
                             if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
                                 "N/A".to_string()
@@ -140,18 +149,20 @@ pub fn draw(f: &mut Frame, app: &App) {
                         ratatui::widgets::Cell::from(log.ecu_id.as_str()),
                         ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
                         ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")),
+                        ratatui::widgets::Cell::from(entry.source_name()),
                         ratatui::widgets::Cell::from(payload_display),
                     ];
                     ratatui::widgets::Row::new(cells).height(1)
                 });
 
-            // Table widths: Level(5), Time(15), ECU(5), APP(5), CTX(5), Payload(Min(20))
+            // Table widths: Level, Time, ECU, APP, CTX, Source, Payload
             let widths = [
                 Constraint::Length(5),
                 Constraint::Length(21),
                 Constraint::Length(5),
                 Constraint::Length(5),
                 Constraint::Length(5),
+                Constraint::Length(18),
                 Constraint::Min(20),
             ];
 
@@ -173,7 +184,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         AppScreen::LogDetail => {
             if let Some(&idx) = app.filtered_log_indices.get(app.logs_selected_index) {
-                let log = &app.logs[idx];
+                let entry = &app.logs[idx];
+                let log = &entry.message;
 
                 let detail_chunks = Layout::default()
                     .direction(Direction::Vertical)
@@ -181,12 +193,13 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .split(chunks[0]);
 
                 let meta_text = format!(
-                    "Timestamp: {} ({} μs)\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    "Timestamp: {} ({} μs)\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nSource: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
                     format_timestamp(log.timestamp_us),
                     log.timestamp_us,
                     log.ecu_id,
                     log.apid.as_deref().unwrap_or("-"),
                     log.ctid.as_deref().unwrap_or("-"),
+                    entry.source_name(),
                     log.log_level,
                     log.payload_text
                 );
@@ -335,7 +348,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::explorer::FileEntry;
-    use crate::parser::DltMessage;
+    use crate::{app::LogEntry, parser::DltMessage};
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
 
@@ -382,15 +395,19 @@ mod tests {
     fn test_draw_log_viewer_screen() {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
-        app.logs.push(DltMessage {
-            timestamp_us: 1_640_995_200_000_000,
-            ecu_id: "ECU1".to_string(),
-            apid: Some("DIAG".to_string()),
-            ctid: Some("CAN1".to_string()),
-            log_level: Some(crate::parser::LogLevel::Error),
-            payload_text: "CAN bus timeout".to_string(),
-            payload_raw: b"CAN bus timeout".to_vec(),
-        });
+        app.logs.push(LogEntry::new(
+            DltMessage {
+                timestamp_us: 1_640_995_200_000_000,
+                ecu_id: "ECU1".to_string(),
+                apid: Some("DIAG".to_string()),
+                ctid: Some("CAN1".to_string()),
+                log_level: Some(crate::parser::LogLevel::Error),
+                payload_text: "CAN bus timeout".to_string(),
+                payload_raw: b"CAN bus timeout".to_vec(),
+            },
+            Some(PathBuf::from("diag_can1.dlt")),
+            0,
+        ));
         app.apply_filter();
 
         let backend = TestBackend::new(100, 24);
@@ -414,15 +431,19 @@ mod tests {
     fn test_draw_log_detail_screen() {
         let mut app = App::new();
         app.screen = AppScreen::LogDetail;
-        app.logs.push(DltMessage {
-            timestamp_us: 5_000_000,
-            ecu_id: "ECU2".to_string(),
-            apid: Some("NAV".to_string()),
-            ctid: Some("GPS1".to_string()),
-            log_level: Some(crate::parser::LogLevel::Info),
-            payload_text: "GPS fix acquired".to_string(),
-            payload_raw: b"GPS fix acquired".to_vec(),
-        });
+        app.logs.push(LogEntry::new(
+            DltMessage {
+                timestamp_us: 5_000_000,
+                ecu_id: "ECU2".to_string(),
+                apid: Some("NAV".to_string()),
+                ctid: Some("GPS1".to_string()),
+                log_level: Some(crate::parser::LogLevel::Info),
+                payload_text: "GPS fix acquired".to_string(),
+                payload_raw: b"GPS fix acquired".to_vec(),
+            },
+            Some(PathBuf::from("nav_gps1.dlt")),
+            0,
+        ));
         app.apply_filter();
 
         let backend = TestBackend::new(100, 30);
@@ -479,15 +500,19 @@ mod tests {
         let mut app = App::new();
         app.screen = AppScreen::LogDetail;
         // Add a log but apply a filter that matches nothing
-        app.logs.push(DltMessage {
-            timestamp_us: 1_000_000,
-            ecu_id: "ECU1".to_string(),
-            apid: Some("APP1".to_string()),
-            ctid: Some("CTX1".to_string()),
-            log_level: Some(crate::parser::LogLevel::Info),
-            payload_text: "test message".to_string(),
-            payload_raw: b"test message".to_vec(),
-        });
+        app.logs.push(LogEntry::new(
+            DltMessage {
+                timestamp_us: 1_000_000,
+                ecu_id: "ECU1".to_string(),
+                apid: Some("APP1".to_string()),
+                ctid: Some("CTX1".to_string()),
+                log_level: Some(crate::parser::LogLevel::Info),
+                payload_text: "test message".to_string(),
+                payload_raw: b"test message".to_vec(),
+            },
+            None,
+            0,
+        ));
         // filtered_log_indices is empty (no filter applied to populate it)
         // This simulates the case where a filter removes all results
 
