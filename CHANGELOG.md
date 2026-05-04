@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-05-04
+
+### Added
+
+- **Unified multi-file timeline** — Loaded files are merged into a single timestamp-ordered timeline, making it easier to inspect CTX-split logs together.
+- **Source file tracking** — Log rows and detail view now show the source file for each message.
+- **Source / CTX sidebar** — Log Viewer shows source and context counts alongside the timeline.
+- **CTX colorization** — Context IDs are colored consistently in the timeline and sidebar for faster visual tracking.
+
+### Fixed
+
+- **Parser: invalid short LEN** — DLT messages with LEN smaller than the standard header are rejected.
+- **Terminal cleanup** — Raw mode and alternate screen are restored if startup fails after terminal setup begins.
+- **File loading memory use** — File parsing now streams messages instead of buffering all messages before display.
+
 ## [0.3.4] - 2026-03-06
 
 ### Added
@@ -104,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security hardening** — Zip bomb protection (500MB limit), terminal injection sanitization
 - **CLI argument support** — pass a directory or file path to open directly
 
+[1.0.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.4.1...v1.0.0
 [0.3.4]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.1...v0.3.2
