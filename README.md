@@ -1,6 +1,9 @@
 # dlt-tui
 
 [![Crates.io](https://img.shields.io/crates/v/dlt-tui.svg)](https://crates.io/crates/dlt-tui)
+[![Downloads](https://img.shields.io/crates/d/dlt-tui.svg)](https://crates.io/crates/dlt-tui)
+[![CI](https://github.com/tkmsikd/dlt-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/tkmsikd/dlt-tui/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/tkmsikd/dlt-tui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **A fast, keyboard-centric terminal viewer for Automotive DLT (Diagnostic Log and Trace) files.**
@@ -43,7 +46,19 @@ Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over
 
 ## Quick Start
 
+### Download a prebuilt binary
+
+Grab the latest binary for Linux (x86_64 / aarch64, incl. static musl builds), macOS (Intel / Apple Silicon), or Windows from the [Releases page](https://github.com/tkmsikd/dlt-tui/releases) — no Rust toolchain required.
+
+```bash
+# Example: Linux x86_64 (static musl build, works on any distro)
+curl -L https://github.com/tkmsikd/dlt-tui/releases/latest/download/dlt-tui-x86_64-unknown-linux-musl.tar.gz | tar xz
+./dlt-tui
+```
+
 ### Install from crates.io
+
+Requires Rust 1.88 or later.
 
 ```bash
 cargo install dlt-tui

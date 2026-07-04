@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-04
+
+### Added
+
+- **`--version` / `-V` flag** — Print the version and exit.
+- **Prebuilt binaries** — Tagged releases now publish binaries for Linux (x86_64 gnu/musl, aarch64 musl), macOS (Intel / Apple Silicon), and Windows, so no Rust toolchain is needed to install.
+- **Declared MSRV** — `rust-version = "1.88"` is now declared in `Cargo.toml` and enforced in CI, so unsupported toolchains fail fast with a clear error.
+
+### Changed
+
+- **Much lighter builds** — `zip` and `chrono` are now compiled without unused default features (drops zstd/aes/bzip2/lzma/ppmd and their C toolchain requirements). Dependency count went from 147 to 124 crates, making `cargo install dlt-tui` faster and more reliable.
+- **Smaller release binary** — Release profile now enables thin LTO and symbol stripping.
+- CI now tests on Linux, macOS, and Windows.
+
+### Fixed
+
+- Panic messages are no longer swallowed by the alternate screen — the terminal is restored before the panic message is printed.
+
 ## [1.0.0] - 2026-05-04
 
 ### Added

@@ -47,6 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("OPTIONS:");
                 println!("    -c, --connect <HOST:PORT>    Connect to a dlt-daemon TCP socket");
                 println!("    -h, --help                   Print help information");
+                println!("    -V, --version                Print version information");
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                println!("dlt-tui {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             other => {
@@ -55,6 +60,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         i += 1;
     }
+
+    // Restore the terminal before the default panic handler prints, so the
+    // message is not swallowed by the alternate screen.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        default_panic(info);
+    }));
 
     // Setup terminal (raw mode) — only after argument validation passes
     let mut cleanup = TerminalCleanup::default();

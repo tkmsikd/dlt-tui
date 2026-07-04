@@ -1,7 +1,8 @@
 [package]
 name = "dlt-tui"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["tkmsikd <tikeda1618@gmail.com>"]
 description = "A fast, keyboard-centric TUI viewer for Automotive DLT (Diagnostic Log and Trace) files"
 license = "MIT"
@@ -10,10 +11,16 @@ homepage = "https://github.com/tkmsikd/dlt-tui"
 readme = "README.md"
 keywords = ["dlt", "tui", "automotive", "log-viewer", "diagnostics"]
 categories = ["command-line-utilities", "visualization"]
-exclude = ["sample.dlt", "tests/generate_sample_dlt.rs"]
+exclude = [
+    "sample.dlt",
+    "tests/generate_sample_dlt.rs",
+    "assets/",
+    "docs/",
+    ".github/",
+]
 
 [dependencies]
-chrono = "0.4.44"
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 crossterm = "0.29.0"
 flate2 = "1.1.9"
 nom = "8.0.0"
@@ -21,7 +28,12 @@ ratatui = { version = "0.30.0", features = ["all-widgets"] }
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.0.4"
-zip = "8.1.0"
+zip = { version = "8.1.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.25.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
