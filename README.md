@@ -11,7 +11,7 @@
 Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over SSH on test benches, in CI pipelines, and inside Docker containers.
 
 <p align="center">
-  <img src="assets/demo.png" alt="dlt-tui demo screenshot" width="700">
+  <img src="assets/demo.gif" alt="dlt-tui demo — scrolling, filtering, regex search, hex dump" width="700">
 </p>
 
 ---
