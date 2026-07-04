@@ -46,6 +46,12 @@ Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over
 
 ## Quick Start
 
+### Install with Homebrew (macOS / Linux)
+
+```bash
+brew install tkmsikd/tap/dlt-tui
+```
+
 ### Download a prebuilt binary
 
 Grab the latest binary for Linux (x86_64 / aarch64, incl. static musl builds), macOS (Intel / Apple Silicon), or Windows from the [Releases page](https://github.com/tkmsikd/dlt-tui/releases) — no Rust toolchain required.
