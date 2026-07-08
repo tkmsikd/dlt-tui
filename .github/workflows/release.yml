@@ -52,3 +52,95 @@ jobs:
           tar: unix
           zip: windows
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  update-tap:
+    name: Update Homebrew tap
+    needs: upload-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tkmsikd/homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: tkmsikd/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      - name: Compute version from tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release archives and compute checksums
+        id: sha
+        env:
+          TAG: ${{ github.ref_name }}
+          BASE_URL: https://github.com/tkmsikd/dlt-tui/releases/download
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+            asset="dlt-tui-${target}.tar.gz"
+            url="${BASE_URL}/${TAG}/${asset}"
+            echo "Downloading ${url}"
+            curl -fSL --retry 3 -o "${asset}" "${url}"
+            sha="$(sha256sum "${asset}" | cut -d' ' -f1)"
+            echo "${target//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Regenerate Formula/dlt-tui.rb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_AARCH64_APPLE_DARWIN: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          SHA_X86_64_APPLE_DARWIN: ${{ steps.sha.outputs.x86_64_apple_darwin }}
+          SHA_AARCH64_LINUX_MUSL: ${{ steps.sha.outputs.aarch64_unknown_linux_musl }}
+          SHA_X86_64_LINUX_MUSL: ${{ steps.sha.outputs.x86_64_unknown_linux_musl }}
+        run: |
+          cat > Formula/dlt-tui.rb <<EOF
+          class DltTui < Formula
+            desc "Fast, keyboard-centric TUI viewer for Automotive DLT files"
+            homepage "https://github.com/tkmsikd/dlt-tui"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/tkmsikd/dlt-tui/releases/download/v${VERSION}/dlt-tui-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_APPLE_DARWIN}"
+              else
+                url "https://github.com/tkmsikd/dlt-tui/releases/download/v${VERSION}/dlt-tui-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_APPLE_DARWIN}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/tkmsikd/dlt-tui/releases/download/v${VERSION}/dlt-tui-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX_MUSL}"
+              else
+                url "https://github.com/tkmsikd/dlt-tui/releases/download/v${VERSION}/dlt-tui-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_X86_64_LINUX_MUSL}"
+              end
+            end
+
+            def install
+              bin.install "dlt-tui"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/dlt-tui --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/dlt-tui.rb
+          if git diff --cached --quiet; then
+            echo "No changes to formula; nothing to commit"
+            exit 0
+          fi
+          git commit -m "dlt-tui ${VERSION}"
+          git push origin main
