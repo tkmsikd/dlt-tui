@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `Ctrl+b` (page up) works in the File Explorer again — it was being swallowed by the `b` (batch load) binding.
+- Mouse capture is no longer enabled. It was never used for anything, and it blocked the terminal's native text selection, so you couldn't copy log text with the mouse.
+
+### Changed
+
+- Rewrote the README, and documented previously undocumented behavior: paging keys in the detail view, `Esc` in the explorer, export file naming, and the single-entry limitation when reading `.zip` archives.
+- Homebrew tap formula is now updated automatically on tagged releases (see `RELEASING.md` for the one-time token setup).
+
 ## [1.1.0] - 2026-07-04
 
 ### Added
@@ -42,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Timestamp delta view** — Press `t` in Log Viewer to toggle the time display between absolute time and the time delta ($\Delta$t) from the previous message. Useful for diagnosing timeouts and race conditions.
+- **Timestamp delta view** — Press `t` in Log Viewer to toggle the time display between absolute time and the time delta (Δt) from the previous message. Useful for diagnosing timeouts and race conditions.
 - **Export filtered logs** — Press `E` in Log Viewer to export currently filtered logs to a text file.
 
 ## [0.3.3] - 2026-03-05

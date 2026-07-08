@@ -6,97 +6,60 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://github.com/tkmsikd/dlt-tui)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A fast, keyboard-centric terminal viewer for Automotive DLT (Diagnostic Log and Trace) files.**
-
-Analyze AUTOSAR DLT logs directly in your terminal — no GUI needed. Works over SSH on test benches, in CI pipelines, and inside Docker containers.
+A terminal viewer for automotive DLT (Diagnostic Log and Trace) files.
 
 <p align="center">
   <img src="assets/demo.gif" alt="dlt-tui demo — scrolling, filtering, regex search, hex dump" width="700">
 </p>
 
----
+DLT logs usually live on machines you reach over SSH: test benches, HIL rigs, CI runners. The standard tooling ([dlt-viewer](https://github.com/COVESA/dlt-viewer)) is a Qt desktop app, so in practice you end up copying files back to your workstation just to look at them. dlt-tui is the alternative I wanted: open the file where it is, filter down to the interesting part, and read it — all in the terminal, with vim-style keys.
 
-## Why dlt-tui?
+What it does:
 
-| Pain Point                             | dlt-tui Solution                                            |
-| -------------------------------------- | ----------------------------------------------------------- |
-| dlt-viewer requires a desktop GUI      | Works in any terminal — SSH, CI runners, containers         |
-| Opening multi-GB DLT files is slow     | Async streaming parser — starts displaying before full load |
-| Context logs are split across files    | Merges multi-file loads into one timestamp-ordered timeline |
-| Finding the right log is tedious       | Instant regex search + compound filters (Level × APP × CTX) |
-| Compressed logs need manual extraction | Transparently reads `.dlt`, `.dlt.gz`, and `.dlt.zip`       |
-| Mouse-heavy workflows slow you down    | Vim-style navigation — hands never leave the keyboard       |
+- Opens `.dlt` files, plus `.dlt.gz` and `.dlt.zip` without unpacking first
+- Loads multiple files or whole directories, merged into one timestamp-ordered timeline (useful when a session is split across per-context files)
+- Filters stack on top of each other: minimum log level, APP ID, CTX ID, and regex search over payloads
+- Shows a hex dump of the raw payload for any message
+- Streams live from a running dlt-daemon over TCP (`--connect host:port`)
+- Exports the currently filtered view to a file
+- Parses in a streaming fashion, so large files start displaying before they finish loading
 
-## Features
+It deliberately does less than dlt-viewer — no ECU configuration, no message injection, no plugins (yet). It's for reading logs, and it tries to be very good at that.
 
-- **Built-in File Explorer** — Browse directories and open files without leaving the TUI
-- **Unified Timeline View** — Load many DLT files and inspect them together in timestamp order
-- **Log Table View** — ECU ID, APP ID, CTX ID, Source file, Log Level, Timestamp, and Payload at a glance
-- **Log Detail and Hex Dump** — Inspect raw payload bytes for deep protocol analysis
-- **Color-coded Log Levels** — Fatal (red), Error (light red), Warn (yellow), Info (green), Debug (blue), Verbose (gray)
-- **Real-time Filtering** — Stack multiple filters to isolate exactly what you need:
-  - `/` — Regex text search across payloads
-  - `l` — Filter by minimum log level
-  - `a` — Filter by APP ID
-  - `c` — Filter by CTX ID
-  - `C` — Clear all filters instantly
-- **Live TCP Connection** — Connect directly to a running dlt-daemon for real-time log streaming
-- **Compression Support** — Directly open `.gz` and `.zip` compressed DLT files
-- **Security Hardened** — Zip bomb protection (500MB limit), terminal injection sanitization
+## Install
 
-## Quick Start
-
-### Install with Homebrew (macOS / Linux)
+Homebrew (macOS / Linux):
 
 ```bash
 brew install tkmsikd/tap/dlt-tui
 ```
 
-### Download a prebuilt binary
-
-Grab the latest binary for Linux (x86_64 / aarch64, incl. static musl builds), macOS (Intel / Apple Silicon), or Windows from the [Releases page](https://github.com/tkmsikd/dlt-tui/releases) — no Rust toolchain required.
+Prebuilt binaries for Linux (x86_64 / aarch64, including static musl builds), macOS, and Windows are on the [releases page](https://github.com/tkmsikd/dlt-tui/releases). The musl builds run on any distro with no dependencies:
 
 ```bash
-# Example: Linux x86_64 (static musl build, works on any distro)
 curl -L https://github.com/tkmsikd/dlt-tui/releases/latest/download/dlt-tui-x86_64-unknown-linux-musl.tar.gz | tar xz
 ./dlt-tui
 ```
 
-### Install from crates.io
+With a Rust toolchain (1.88+): `cargo install dlt-tui`, or clone and `cargo build --release`.
 
-Requires Rust 1.88 or later.
+## Usage
 
 ```bash
-cargo install dlt-tui
+dlt-tui                                  # file explorer in the current directory
+dlt-tui /var/log/dlt/                    # ... or a specific directory
+dlt-tui boot.dlt session.dlt.gz          # open files as one merged timeline
+dlt-tui --connect localhost:3490         # stream from a running dlt-daemon
 ```
 
-### Or build from source
+For an Android IVI target, forward the daemon port first:
 
 ```bash
-git clone https://github.com/tkmsikd/dlt-tui.git
-cd dlt-tui
-cargo build --release
-```
-
-### Run
-
-```bash
-# Open file explorer in current directory
-dlt-tui
-
-# Open a specific directory
-dlt-tui /path/to/log/directory/
-
-# Directly open one or multiple DLT files as a unified timeline
-dlt-tui /path/to/log1.dlt /path/to/log2.dlt.gz
-
-# Connect to a running dlt-daemon over TCP
-dlt-tui --connect localhost:3490
-
-# Typical ADB workflow for IVI development
 adb forward tcp:3490 tcp:3490
 dlt-tui --connect localhost:3490
 ```
+
+A typical triage session: press `l` `W` `Enter` to hide everything below warnings, `a` `DIAG` `Enter` to narrow to one application, then `/` with a regex to find the message you're after, and `Enter` on it for the hex dump. `C` clears all filters. `S` saves the current filter stack to `.dlt-tui.toml` so you can reload it with `L` next time.
 
 ## Keybindings
 
@@ -114,7 +77,7 @@ dlt-tui --connect localhost:3490
 | `G` / `End`            | Jump to bottom              |
 | `Enter`                | Open directory / Load file  |
 | `b`                    | Batch load all files in dir |
-| `q`                    | Quit                        |
+| `q` / `Esc`            | Quit                        |
 
 ### Log Viewer
 
@@ -139,7 +102,7 @@ dlt-tui --connect localhost:3490
 | `S`                    | Save filter block to `.dlt-tui.toml`   |
 | `L`                    | Load filter block from `.dlt-tui.toml` |
 | `F`                    | Toggle auto-scroll (tail mode)         |
-| `t`                    | Toggle delta time ($\Delta$t)          |
+| `t`                    | Toggle delta time between messages     |
 | `E`                    | Export filtered logs to file           |
 | `q` / `Esc`            | Back to File Explorer                  |
 
@@ -150,58 +113,23 @@ dlt-tui --connect localhost:3490
 | `j` / `k`   | Navigate between log entries |
 | `q` / `Esc` | Back to Log Viewer           |
 
-In any filter input mode, press `Enter` to apply or `Esc` to cancel and reset the filter.
+Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In any filter input, `Enter` applies and `Esc` cancels the input — an already-active filter stays as it was.
 
-## Use Cases
+## Notes
 
-### ECU Bring-Up and Debugging
+- Files are read up to 500 MB each (also caps decompression, as a zip-bomb guard).
+- `.zip` archives: only the first entry is read. Zip one `.dlt` per archive, or use `.gz`.
+- `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
+- Payload text is sanitized before rendering, so logs containing escape sequences can't mess with your terminal.
 
-SSH into your target hardware and inspect DLT logs on the spot — no need to copy files back to your workstation.
+## Planned
 
-```bash
-ssh ecu-bench "cat /var/log/dlt/*.dlt" > combined.dlt && dlt-tui combined.dlt
-```
-
-### CI / Test Bench Pipeline
-
-Integrate log inspection into your CI pipeline. When a test fails, quickly triage the issue:
-
-```bash
-dlt-tui ./test-results/ecu_log_$(date +%Y%m%d).dlt.gz
-```
-
-### Quick Triage with Compound Filters
-
-Stack filters to isolate exactly what you need:
-
-1. Press `l`, type `W`, press `Enter` (show warnings and above only)
-2. Press `a`, type `DIAG`, press `Enter` (narrow to diagnostics module)
-3. Press `/`, type `CAN`, press `Enter` (find CAN-related messages)
-4. Press `Enter` on a suspicious log to inspect the hex dump
-
-## Roadmap
-
-- [x] Page-up / Page-down scrolling
-- [x] Horizontal scroll for long payloads
-- [ ] Bookmarking and log annotation
-- [x] Saved filter configurations (`.dlt-tui.toml`)
-- [x] Multi-file / directory batch loading
-- [x] Unified timestamp timeline across loaded files
-- [x] Timestamp delta display between messages
-- [ ] DLT lifecycle and session tracking
-- [x] Export filtered logs to file
-- [ ] Plugin system for custom decoders (SOME/IP, UDS, etc.)
+Tracked as [issues](https://github.com/tkmsikd/dlt-tui/issues): bookmarking and annotation, DLT lifecycle/session tracking, and pluggable payload decoders (SOME/IP, UDS).
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-```bash
-git clone https://github.com/tkmsikd/dlt-tui.git
-cd dlt-tui
-cargo test
-```
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). `cargo test` runs the whole suite; `sample.dlt` in the repo is handy for manual testing.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)
