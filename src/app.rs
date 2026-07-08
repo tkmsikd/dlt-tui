@@ -620,7 +620,10 @@ impl App {
                 // UX-6: q on LogDetail goes back to LogViewer
                 AppScreen::LogDetail => self.screen = AppScreen::LogViewer,
             },
-            KeyCode::Char('b') if self.screen == AppScreen::Explorer => {
+            KeyCode::Char('b')
+                if self.screen == AppScreen::Explorer
+                    && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 // BUG-2: bounds check before accessing explorer_items
                 if let Some(selected) = self.explorer_items.get(self.explorer_selected_index) {
                     let dir_path = if selected.is_dir {
@@ -1366,6 +1369,29 @@ mod tests {
             kind: crossterm::event::KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
+    }
+
+    /// FIXED: `Ctrl+b` in the Explorer must page up, not trigger batch load
+    /// (the `b` arm used to match before modifiers were checked)
+    #[test]
+    fn test_ctrl_b_pages_up_in_explorer() {
+        let mut app = build_mock_app_with_explorer_files();
+        app.explorer_selected_index = 2;
+
+        let ctrl_b = KeyEvent {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        app.handle_key(ctrl_b, 20);
+
+        assert_eq!(
+            app.screen,
+            AppScreen::Explorer,
+            "Ctrl+b must not trigger batch load"
+        );
+        assert_eq!(app.explorer_selected_index, 0, "Ctrl+b should page up");
     }
 
     /// FIXED BUG-3: Esc during filter input now preserves previous filter value
