@@ -102,7 +102,17 @@ where
 
     loop {
         match reader.read(&mut read_buf) {
-            Ok(0) => break, // EOF
+            Ok(0) => {
+                // Any bytes still buffered cannot form a complete message and
+                // must be reported as skipped rather than silently discarded.
+                if !buffer.is_empty() {
+                    total_skipped += buffer.len();
+                    if let Some(skipped_bytes) = &skipped_bytes {
+                        skipped_bytes.store(total_skipped, Ordering::Relaxed);
+                    }
+                }
+                break;
+            }
             Ok(n) => {
                 buffer.extend_from_slice(&read_buf[..n]);
             }
@@ -430,17 +440,47 @@ mod tests {
 
     #[test]
     fn test_stream_truncated_message() {
-        // Build a valid message then truncate the last few bytes
         let full = build_dlt_message_with_storage_header(b"Complete");
-        let truncated = &full[..full.len() - 3]; // cut off end
 
-        let cursor = Cursor::new(truncated.to_vec());
-        let (tx, rx) = mpsc::channel();
+        for cut in 1..full.len() {
+            let cursor = Cursor::new(full[..cut].to_vec());
+            let (tx, rx) = mpsc::channel();
+            let skipped_bytes = Arc::new(AtomicUsize::new(0));
 
-        stream_from_reader(cursor, tx).unwrap();
+            stream_from_reader_with_skipped(cursor, tx, Arc::clone(&skipped_bytes)).unwrap();
 
-        let msgs: Vec<_> = rx.try_iter().collect();
-        assert_eq!(msgs.len(), 0); // can't parse truncated message
+            assert_eq!(rx.try_iter().count(), 0, "cut at byte {cut}");
+            assert_eq!(
+                skipped_bytes.load(Ordering::Relaxed),
+                cut,
+                "cut at byte {cut}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stream_counts_each_trailing_byte_once_across_streams() {
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+        let mut expected_total = 0;
+
+        for trailing_len in 0..=4 {
+            let mut data = build_dlt_message_with_storage_header(b"Complete");
+            data.extend(std::iter::repeat_n(0xAA, trailing_len));
+            let cursor = Cursor::new(data);
+            let (tx, rx) = mpsc::channel();
+
+            stream_from_reader_with_skipped(cursor, tx, Arc::clone(&skipped_bytes)).unwrap();
+
+            let messages: Vec<_> = rx.try_iter().collect();
+            assert_eq!(messages.len(), 1, "trailing length {trailing_len}");
+            assert_eq!(messages[0].payload_text(), "Complete");
+            expected_total += trailing_len;
+            assert_eq!(
+                skipped_bytes.load(Ordering::Relaxed),
+                expected_total,
+                "trailing length {trailing_len}"
+            );
+        }
     }
 
     #[test]
