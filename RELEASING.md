@@ -39,20 +39,26 @@ git push origin vX.Y.Z
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 
 1. **`verify`** — checks the tag/version match, formatting, Clippy, tests, the
-   crates.io package, and the Rust 1.88 MSRV before anything is published.
-2. **`create-release`** — creates the GitHub release with notes pulled from `CHANGELOG.md`.
+   crates.io package, RustSec audit, and the Rust 1.88 MSRV before anything is published.
+2. **`create-release`** — creates a draft GitHub release with notes pulled from `CHANGELOG.md`.
 3. **`upload-binaries`** — builds and uploads archives for all six targets
    (Linux x86_64 gnu/musl, aarch64 musl; macOS x86_64/aarch64; Windows x86_64).
-4. **`update-tap`** — downloads the four Homebrew-relevant archives
+4. **`publish-release`** — verifies that all six archives exist, then publishes
+   the release. If any build or upload fails, the incomplete release remains a draft.
+5. **`update-tap`** — downloads the four Homebrew-relevant archives
    (macOS x86_64/aarch64, Linux musl x86_64/aarch64), computes their SHA-256
    checksums, regenerates `Formula/dlt-tui.rb` in
    [tkmsikd/homebrew-tap](https://github.com/tkmsikd/homebrew-tap), and pushes
    the update to `main`.
 
 Watch the [Actions tab](https://github.com/tkmsikd/dlt-tui/actions) until all
-four stages go green. If `update-tap` fails (e.g. an asset 404s because a build
-job failed), fix the underlying issue and re-run the workflow — it's safe to
-re-run since it always regenerates the formula from scratch.
+five stages go green. If a binary build fails, the release stays private as a
+draft; fix the underlying issue and re-run the failed jobs. If `update-tap`
+fails, re-run it after fixing the tap configuration — the published release
+already contains all required binaries, and the formula is regenerated from
+scratch on every run. Do not re-run the entire workflow after publication;
+re-run only failed jobs so the existing release and its download history are
+preserved.
 
 ## 3. Publish to crates.io
 

@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
@@ -58,6 +60,15 @@ jobs:
       - name: Verify package
         run: cargo package --locked
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
+
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
 
@@ -72,9 +83,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
         with:
           changelog: CHANGELOG.md
+          draft: true
+          branch: master
           token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-binaries:
@@ -101,6 +116,8 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
@@ -108,11 +125,66 @@ jobs:
           target: ${{ matrix.target }}
           tar: unix
           zip: windows
+          locked: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish complete GitHub Release
+    needs: upload-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify assets and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          expected_assets=(
+            dlt-tui-x86_64-unknown-linux-gnu.tar.gz
+            dlt-tui-x86_64-unknown-linux-musl.tar.gz
+            dlt-tui-aarch64-unknown-linux-musl.tar.gz
+            dlt-tui-x86_64-apple-darwin.tar.gz
+            dlt-tui-aarch64-apple-darwin.tar.gz
+            dlt-tui-x86_64-pc-windows-msvc.zip
+          )
+
+          release_json="$(gh release view "${TAG}" --json isDraft,assets)"
+          if [[ "$(jq -r '.isDraft' <<<"${release_json}")" != "true" ]]; then
+            echo "Release ${TAG} must remain a draft until every asset is verified" >&2
+            exit 1
+          fi
+
+          actual_count="$(jq '.assets | length' <<<"${release_json}")"
+          if [[ "${actual_count}" -ne "${#expected_assets[@]}" ]]; then
+            echo "Release ${TAG} has ${actual_count} assets; expected ${#expected_assets[@]}" >&2
+            jq -r '.assets[].name' <<<"${release_json}" >&2
+            exit 1
+          fi
+
+          for asset in "${expected_assets[@]}"; do
+            asset_record="$(
+              jq -r --arg name "${asset}" \
+                '.assets[] | select(.name == $name) | [.state, .size] | @tsv' \
+                <<<"${release_json}"
+            )"
+            if [[ -z "${asset_record}" ]]; then
+              echo "Release ${TAG} is missing required asset: ${asset}" >&2
+              exit 1
+            fi
+            IFS=$'\t' read -r asset_state asset_size <<<"${asset_record}"
+            if [[ "${asset_state}" != "uploaded" || ! "${asset_size}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Release asset ${asset} is not a non-empty completed upload" >&2
+              exit 1
+            fi
+          done
+
+          gh release edit "${TAG}" --draft=false --latest
 
   update-tap:
     name: Update Homebrew tap
-    needs: upload-binaries
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tkmsikd/homebrew-tap

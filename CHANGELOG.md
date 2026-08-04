@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Tagged releases must come from `master`, pass a current RustSec audit, and remain drafts until all six locked platform builds are uploaded and verified, preventing incomplete releases from being published.
 - RustSec's patched `anyhow` and `rand` releases replace stale lockfile entries, and dependency-audit warnings now fail CI instead of being silently allowed.
 - Cargo dependencies are audited against RustSec on dependency changes, on demand, and weekly so newly published advisories are detected without waiting for another release.
 - CI and release actions are pinned to verified commits, use least-privilege read access by default, and receive weekly Dependabot updates.
