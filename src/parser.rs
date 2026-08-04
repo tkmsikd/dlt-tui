@@ -380,8 +380,9 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
             Err(_) => return Err(ParseError::Incomplete(16)),
         }
     } else if input.starts_with(b"DLT") {
-        // Partial "DLT" magic — might be an incomplete storage header
-        return Err(ParseError::Incomplete(16));
+        // Four bytes are already available, so a different fourth byte is a
+        // corrupt storage magic rather than a header that could become valid.
+        return Err(ParseError::InvalidMagicNumber);
     } else {
         // No storage header — check if this looks like a valid standard header
         let htyp = input[0];
@@ -1040,6 +1041,18 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert!(skipped > 0);
         assert_eq!(msgs[0].payload_text(), "After garbage");
+    }
+
+    #[test]
+    fn test_parse_all_messages_recovers_after_invalid_storage_magic() {
+        let mut data = b"DLTx".to_vec();
+        data.extend(build_spec_compliant_message(b"After invalid magic"));
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "After invalid magic");
     }
 
     #[test]

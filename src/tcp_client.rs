@@ -204,6 +204,20 @@ mod tests {
         msg
     }
 
+    fn build_dlt_message_without_storage_header(payload: &[u8]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.push(0x21); // HTYP: UEH=1, VERS=1
+        msg.push(0x00); // MCNT
+        let total_len: u16 = 4 + 10 + payload.len() as u16;
+        msg.extend_from_slice(&total_len.to_be_bytes());
+        msg.push(0x40); // MSIN: non-verbose Info log
+        msg.push(1); // NOAR
+        msg.extend_from_slice(b"APP1");
+        msg.extend_from_slice(b"CTX1");
+        msg.extend_from_slice(payload);
+        msg
+    }
+
     #[test]
     fn test_stream_single_message() {
         let data = build_dlt_message_with_storage_header(b"Hello TCP");
@@ -294,6 +308,25 @@ mod tests {
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].payload_text(), "After bogus header");
+    }
+
+    #[test]
+    fn test_stream_recovers_raw_message_after_invalid_storage_magic() {
+        let mut data = b"DLTx".to_vec();
+        data.extend(build_dlt_message_without_storage_header(
+            b"Raw after invalid magic",
+        ));
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_from_reader_with_skipped(cursor, tx, Arc::clone(&skipped_bytes)).unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Raw after invalid magic");
     }
 
     #[test]

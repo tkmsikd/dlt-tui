@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Invalid `DLT?` storage magic is now treated as corruption, allowing parser and TCP recovery to continue with the next valid message.
 - Verbose DLT arguments with variable name/unit metadata now follow the AUTOSAR field order and decode correctly.
 - Stream recovery no longer loses valid storage-header messages after a corrupt raw header declares an incomplete oversized message.
 - File open, decompression, and read failures are now reported in the UI instead of silently showing an empty viewer.
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI and release actions are pinned to verified commits, use least-privilege read access by default, and receive weekly Dependabot updates.
 - Payload text is now decoded only when displayed, searched, or exported, reducing memory use for large captures while retaining the original bytes for hex views.
 - File and TCP ingestion now use a bounded queue, and each UI tick processes a bounded batch to keep large or fast streams responsive.
 - The log viewer now builds only visible rows, caches sidebar counts, incrementally merges new timestamp-sorted batches, and shares source paths between entries, substantially reducing CPU, allocations, and memory use on large logs.
