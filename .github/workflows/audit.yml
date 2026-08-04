@@ -33,4 +33,4 @@ jobs:
           tool: cargo-audit@0.22.2
           fallback: none
       - name: Audit Cargo.lock
-        run: cargo audit
+        run: cargo audit --deny warnings

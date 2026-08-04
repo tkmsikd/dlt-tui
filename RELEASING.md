@@ -15,7 +15,7 @@ Steps to cut a new dlt-tui release.
    cargo fmt --check
    cargo clippy --all-targets --locked -- -D warnings
    cargo test --all-targets --locked
-   cargo audit
+   cargo audit --deny warnings
    cargo publish --dry-run --locked
    cargo package --list
    ```

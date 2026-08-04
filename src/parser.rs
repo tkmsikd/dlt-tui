@@ -401,6 +401,10 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         Err(_) => return Err(ParseError::Incomplete(4)),
     };
 
+    if (htyp >> 5) & 0x07 != 1 {
+        return Err(ParseError::InvalidHeader);
+    }
+
     // HTYP bit fields:
     // Bit 0: UEH (Use Extended Header)
     // Bit 1: MSBF (MSB First / Big Endian for payload)
@@ -574,6 +578,19 @@ pub fn find_next_sync(data: &[u8]) -> Option<usize> {
     None
 }
 
+/// Finds a later storage-framed message that is already complete and valid.
+/// This is used to recover from corrupt headers that claim an oversized body
+/// without mistaking an incomplete payload's embedded magic for a sync point.
+pub(crate) fn find_next_complete_storage_message(data: &[u8]) -> Option<usize> {
+    data.windows(4).enumerate().find_map(|(index, window)| {
+        if window == b"DLT\x01" && parse_dlt_message(&data[index..]).is_ok() {
+            Some(index)
+        } else {
+            None
+        }
+    })
+}
+
 /// Parse all DLT messages from a byte buffer with error recovery.
 /// When a parse error occurs, scans ahead for the next valid sync marker
 /// instead of stopping. Returns the parsed messages and the count of bytes skipped.
@@ -589,7 +606,16 @@ pub fn parse_all_messages(data: &[u8]) -> (Vec<DltMessage>, usize) {
                 input = remaining;
             }
             Err(ParseError::Incomplete(_)) => {
-                // Not enough data for the current message; stop
+                if input.len() > 1
+                    && let Some(pos) = find_next_complete_storage_message(&input[1..])
+                {
+                    skipped_bytes += 1 + pos;
+                    input = &input[1 + pos..];
+                    continue;
+                }
+
+                // No later complete storage frame exists, so retain the
+                // current candidate as a genuinely incomplete message.
                 break;
             }
             Err(_) => {
@@ -902,6 +928,20 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_message_rejects_invalid_standard_header_versions() {
+        for version in [0, 2, 3, 4, 5, 6, 7] {
+            let mut data = build_spec_compliant_message(b"invalid version");
+            data[16] = (data[16] & 0x1f) | (version << 5);
+
+            assert_eq!(
+                parse_dlt_message(&data).unwrap_err(),
+                ParseError::InvalidHeader,
+                "storage-framed VERS={version} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_rejects_len_smaller_than_standard_header() {
         let data = [0x20, 0x00, 0x00, 0x03];
 
@@ -1053,6 +1093,24 @@ mod tests {
         assert_eq!(skipped, 4);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].payload_text(), "After invalid magic");
+    }
+
+    #[test]
+    fn test_parse_all_recovers_after_storage_header_with_oversized_length() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"DLT\x01");
+        data.extend_from_slice(&1640995200u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"ECU1");
+        data.extend_from_slice(&[0x21, 0x00, 0xff, 0xff]);
+        let corrupt_len = data.len();
+        data.extend(build_spec_compliant_message(b"Recovered"));
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, corrupt_len);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Recovered");
     }
 
     #[test]
