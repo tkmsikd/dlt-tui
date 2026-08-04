@@ -30,7 +30,7 @@ pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
             log.apid.as_deref().unwrap_or("-"),
             log.ctid.as_deref().unwrap_or("-"),
             level_str,
-            log.payload_text
+            log.payload_text()
         )?;
     }
 
@@ -45,21 +45,22 @@ mod tests {
 
     #[test]
     fn test_export_to_txt() {
-        let msg = DltMessage {
-            timestamp_us: 1_234_567_890,
-            ecu_id: "ECU1".to_string(),
-            apid: Some("APP1".to_string()),
-            ctid: Some("CTX1".to_string()),
-            log_level: Some(crate::parser::LogLevel::Info),
-            payload_text: "test export message".to_string(),
-            payload_raw: b"test export message".to_vec(),
-        };
+        let msg = DltMessage::new(
+            1_234_567_890,
+            "ECU1".to_string(),
+            Some("APP1".to_string()),
+            Some("CTX1".to_string()),
+            Some(crate::parser::LogLevel::Info),
+            b"test export message".to_vec(),
+        );
 
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path().to_str().unwrap();
 
         let logs = vec![&msg];
+        assert!(!msg.payload_text_is_initialized());
         export_to_txt(&logs, path).unwrap();
+        assert!(msg.payload_text_is_initialized());
 
         let mut file = File::open(path).unwrap();
         let mut content = String::new();

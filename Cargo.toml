@@ -13,7 +13,7 @@ keywords = ["dlt", "tui", "automotive", "log-viewer", "diagnostics"]
 categories = ["command-line-utilities", "visualization"]
 exclude = [
     "sample.dlt",
-    "tests/generate_sample_dlt.rs",
+    ".claude/",
     "assets/",
     "docs/",
     ".github/",

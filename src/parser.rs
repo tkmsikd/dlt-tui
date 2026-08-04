@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogLevel {
@@ -11,15 +12,88 @@ pub enum LogLevel {
     Unknown(u8),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PayloadTextFormat {
+    Plain,
+    Verbose { noar: u8, msbf: bool },
+}
+
+#[derive(Debug, Clone)]
 pub struct DltMessage {
     pub timestamp_us: u64,
     pub ecu_id: String,
     pub apid: Option<String>,
     pub ctid: Option<String>,
     pub log_level: Option<LogLevel>,
-    pub payload_text: String,
-    pub payload_raw: Vec<u8>,
+    payload_text: OnceLock<Box<str>>,
+    payload_raw: Box<[u8]>,
+    payload_text_format: PayloadTextFormat,
+}
+
+impl DltMessage {
+    pub fn new(
+        timestamp_us: u64,
+        ecu_id: String,
+        apid: Option<String>,
+        ctid: Option<String>,
+        log_level: Option<LogLevel>,
+        payload_raw: Vec<u8>,
+    ) -> Self {
+        Self {
+            timestamp_us,
+            ecu_id,
+            apid,
+            ctid,
+            log_level,
+            payload_text: OnceLock::new(),
+            payload_raw: payload_raw.into_boxed_slice(),
+            payload_text_format: PayloadTextFormat::Plain,
+        }
+    }
+
+    fn with_verbose_payload(mut self, noar: u8, msbf: bool) -> Self {
+        self.payload_text_format = PayloadTextFormat::Verbose { noar, msbf };
+        self
+    }
+
+    pub fn payload_text(&self) -> &str {
+        self.payload_text
+            .get_or_init(|| match self.payload_text_format {
+                PayloadTextFormat::Plain => {
+                    sanitize_payload_text(&self.payload_raw).into_boxed_str()
+                }
+                PayloadTextFormat::Verbose { noar, msbf } => {
+                    let decoded = decode_verbose_payload(&self.payload_raw, noar, msbf);
+                    if decoded.is_empty() {
+                        sanitize_payload_text(&self.payload_raw).into_boxed_str()
+                    } else {
+                        decoded.into_boxed_str()
+                    }
+                }
+            })
+            .as_ref()
+    }
+
+    pub fn payload_raw(&self) -> &[u8] {
+        &self.payload_raw
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_text_is_initialized(&self) -> bool {
+        self.payload_text.get().is_some()
+    }
+}
+
+impl PartialEq for DltMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp_us == other.timestamp_us
+            && self.ecu_id == other.ecu_id
+            && self.apid == other.apid
+            && self.ctid == other.ctid
+            && self.log_level == other.log_level
+            && self.payload_raw == other.payload_raw
+            && self.payload_text_format == other.payload_text_format
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -158,24 +232,33 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
         let is_rawd = (type_info >> 10) & 1 == 1;
         let is_vari = (type_info >> 11) & 1 == 1;
 
-        // Skip VARI (variable info: name + optional unit) — bounds-checked
+        // Skip VARI (variable info: name + optional unit) — bounds-checked.
+        // Numeric arguments encode both lengths before either string:
+        // name_len, unit_len, name, unit. Other supported types only carry a name.
         if is_vari {
             if pos + 2 > payload.len() {
                 break;
             }
             let name_len = read_u16_at(payload, pos, msbf) as usize;
             pos += 2;
+
+            let unit_len = if is_sint || is_uint || is_float {
+                if pos + 2 > payload.len() {
+                    break;
+                }
+                let len = read_u16_at(payload, pos, msbf) as usize;
+                pos += 2;
+                len
+            } else {
+                0
+            };
+
             if pos + name_len > payload.len() {
                 break; // S2: prevent OOB from crafted name_len
             }
             pos += name_len;
 
-            if !(is_strg || is_rawd) {
-                if pos + 2 > payload.len() {
-                    break;
-                }
-                let unit_len = read_u16_at(payload, pos, msbf) as usize;
-                pos += 2;
+            if unit_len > 0 {
                 if pos + unit_len > payload.len() {
                     break; // S2: prevent OOB from crafted unit_len
                 }
@@ -446,31 +529,19 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     };
     input = new_input;
 
-    // 5. Decode payload
-    let payload_text = if is_verbose && noar > 0 {
-        let decoded = decode_verbose_payload(payload_bytes, noar, msbf);
-        if decoded.is_empty() {
-            // Fallback to raw display if decoding returned nothing
-            sanitize_payload_text(payload_bytes)
-        } else {
-            decoded
-        }
-    } else {
-        sanitize_payload_text(payload_bytes)
-    };
+    let mut message = DltMessage::new(
+        timestamp_us,
+        ecu_id,
+        msg_apid,
+        msg_ctid,
+        msg_log_level,
+        payload_bytes.to_vec(),
+    );
+    if is_verbose && noar > 0 {
+        message = message.with_verbose_payload(noar, msbf);
+    }
 
-    Ok((
-        input,
-        DltMessage {
-            timestamp_us,
-            ecu_id,
-            apid: msg_apid,
-            ctid: msg_ctid,
-            log_level: msg_log_level,
-            payload_text,
-            payload_raw: payload_bytes.to_vec(),
-        },
-    ))
+    Ok((input, message))
 }
 
 /// Find the next potential DLT message start position in the data.
@@ -624,6 +695,21 @@ mod tests {
         arg
     }
 
+    /// Build a verbose uint32 argument with variable name and unit metadata.
+    fn build_verbose_uint32_arg_with_vari(val: u32, name: &str, unit: &str) -> Vec<u8> {
+        let mut arg = Vec::new();
+        let type_info: u32 = 0x0000_0843; // VARI | UINT | TYLE=3
+        arg.extend_from_slice(&type_info.to_le_bytes());
+        arg.extend_from_slice(&((name.len() + 1) as u16).to_le_bytes());
+        arg.extend_from_slice(&((unit.len() + 1) as u16).to_le_bytes());
+        arg.extend_from_slice(name.as_bytes());
+        arg.push(0);
+        arg.extend_from_slice(unit.as_bytes());
+        arg.push(0);
+        arg.extend_from_slice(&val.to_le_bytes());
+        arg
+    }
+
     /// Build a verbose sint32 argument
     fn build_verbose_sint32_arg(val: i32) -> Vec<u8> {
         let mut arg = Vec::new();
@@ -642,11 +728,18 @@ mod tests {
 
         let (remaining, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
+        assert!(!msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), b"Hello DLT");
+        assert!(!msg.payload_text_is_initialized());
         assert_eq!(msg.ecu_id, "ECU1");
         assert_eq!(msg.apid, Some("APP1".to_string()));
         assert_eq!(msg.ctid, Some("CTX1".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
-        assert_eq!(msg.payload_text, "Hello DLT");
+        assert_eq!(msg.payload_text(), "Hello DLT");
+        assert!(msg.payload_text_is_initialized());
+
+        let first = msg.payload_text().as_ptr();
+        assert_eq!(msg.payload_text().as_ptr(), first);
     }
 
     #[test]
@@ -657,7 +750,7 @@ mod tests {
         let (remaining, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
         assert_eq!(
-            msg.payload_text,
+            msg.payload_text(),
             "Daemon launched. Starting to output traces..."
         );
         assert_eq!(msg.log_level, Some(LogLevel::Info));
@@ -669,7 +762,7 @@ mod tests {
         let data = build_verbose_message(&payload);
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "42");
+        assert_eq!(msg.payload_text(), "42");
     }
 
     #[test]
@@ -678,7 +771,7 @@ mod tests {
         let data = build_verbose_message(&payload);
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "-123");
+        assert_eq!(msg.payload_text(), "-123");
     }
 
     #[test]
@@ -702,10 +795,43 @@ mod tests {
         msg_bytes.push(2); // NOAR = 2
         msg_bytes.extend_from_slice(b"APP1");
         msg_bytes.extend_from_slice(b"CTX1");
-        msg_bytes.extend(payload);
+        msg_bytes.extend_from_slice(&payload);
 
         let (_, msg) = parse_dlt_message(&msg_bytes).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "RPM: 2400");
+        assert!(!msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), payload.as_slice());
+        assert_eq!(msg.payload_text(), "RPM: 2400");
+        assert!(msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), payload.as_slice());
+    }
+
+    #[test]
+    fn test_clone_and_equality_preserve_lazy_payload_state() {
+        let data = build_spec_compliant_message(b"lazy clone");
+        let (_, original) = parse_dlt_message(&data).expect("Parsing failed");
+        let clone = original.clone();
+
+        assert!(!original.payload_text_is_initialized());
+        assert!(!clone.payload_text_is_initialized());
+        assert_eq!(original, clone);
+        assert!(!original.payload_text_is_initialized());
+        assert!(!clone.payload_text_is_initialized());
+
+        assert_eq!(clone.payload_text(), "lazy clone");
+        assert!(!original.payload_text_is_initialized());
+        assert!(clone.payload_text_is_initialized());
+        assert_eq!(original, clone);
+        assert!(!original.payload_text_is_initialized());
+
+        let initialized_clone = clone.clone();
+        assert!(initialized_clone.payload_text_is_initialized());
+        assert_eq!(initialized_clone.payload_text(), "lazy clone");
+    }
+
+    #[test]
+    fn test_dlt_message_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DltMessage>();
     }
 
     #[test]
@@ -750,7 +876,7 @@ mod tests {
         assert_eq!(msg.apid, Some("VRBT".to_string()));
         assert_eq!(msg.ctid, Some("BOOT".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
-        assert_eq!(msg.payload_text, "Real IVI log");
+        assert_eq!(msg.payload_text(), "Real IVI log");
     }
 
     #[test]
@@ -847,9 +973,48 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 3);
         assert_eq!(skipped, 0);
-        assert_eq!(msgs[0].payload_text, "Message 1");
-        assert_eq!(msgs[1].payload_text, "Message 2");
-        assert_eq!(msgs[2].payload_text, "Message 3");
+        assert_eq!(msgs[0].payload_text(), "Message 1");
+        assert_eq!(msgs[1].payload_text(), "Message 2");
+        assert_eq!(msgs[2].payload_text(), "Message 3");
+    }
+
+    #[test]
+    fn test_parse_many_messages_materializes_only_requested_payloads() {
+        const COUNT: usize = 4096;
+        let message = build_spec_compliant_message(b"deferred payload");
+        let mut data = Vec::with_capacity(message.len() * COUNT);
+        for _ in 0..COUNT {
+            data.extend_from_slice(&message);
+        }
+
+        let (messages, skipped) = parse_all_messages(&data);
+        assert_eq!(messages.len(), COUNT);
+        assert_eq!(skipped, 0);
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.payload_text_is_initialized())
+        );
+
+        for message in &messages {
+            assert_eq!(message.payload_raw(), b"deferred payload");
+        }
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.payload_text_is_initialized())
+        );
+
+        for index in [0, COUNT / 2, COUNT - 1] {
+            assert_eq!(messages[index].payload_text(), "deferred payload");
+        }
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.payload_text_is_initialized())
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -862,8 +1027,8 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 2);
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "First");
-        assert_eq!(msgs[1].payload_text, "Second");
+        assert_eq!(msgs[0].payload_text(), "First");
+        assert_eq!(msgs[1].payload_text(), "Second");
     }
 
     #[test]
@@ -874,7 +1039,7 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 1);
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "After garbage");
+        assert_eq!(msgs[0].payload_text(), "After garbage");
     }
 
     #[test]
@@ -906,6 +1071,13 @@ mod tests {
         let payload = build_verbose_uint32_arg(12345);
         let result = decode_verbose_payload(&payload, 1, false);
         assert_eq!(result, "12345");
+    }
+
+    #[test]
+    fn test_decode_verbose_uint32_with_variable_info() {
+        let payload = build_verbose_uint32_arg_with_vari(2400, "engine_speed", "rpm");
+        let result = decode_verbose_payload(&payload, 1, false);
+        assert_eq!(result, "2400");
     }
 
     #[test]
@@ -945,9 +1117,9 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 3, "All 3 valid messages should be recovered");
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "Boot started");
-        assert_eq!(msgs[1].payload_text, "GPS acquired");
-        assert_eq!(msgs[2].payload_text, "CAN timeout");
+        assert_eq!(msgs[0].payload_text(), "Boot started");
+        assert_eq!(msgs[1].payload_text(), "GPS acquired");
+        assert_eq!(msgs[2].payload_text(), "CAN timeout");
     }
 
     /// Scenario: Verbose message like a real IVI system would produce
@@ -958,11 +1130,11 @@ mod tests {
 
         let (_, msg) = parse_dlt_message(&data).expect("Should parse");
         assert_eq!(
-            msg.payload_text,
+            msg.payload_text(),
             "234:234:cdfw_boot_main.cpp:60:main:Release version."
         );
-        assert!(!msg.payload_text.contains('\0'));
-        assert!(!msg.payload_text.contains('\u{FFFD}')); // no replacement chars
+        assert!(!msg.payload_text().contains('\0'));
+        assert!(!msg.payload_text().contains('\u{FFFD}')); // no replacement chars
     }
 
     // ==================== Bug verification tests ====================
@@ -1037,7 +1209,7 @@ mod tests {
         assert_eq!(parsed.apid, Some("APP1".to_string()));
         assert_eq!(parsed.ctid, Some("CTX1".to_string()));
         assert_eq!(parsed.log_level, Some(LogLevel::Info));
-        assert_eq!(parsed.payload_text, "Hello");
+        assert_eq!(parsed.payload_text(), "Hello");
     }
 
     /// FIXED BUG-1b: Messages with WEID can provide ECU ID without storage header
@@ -1063,6 +1235,6 @@ mod tests {
         assert_eq!(remaining.len(), 0);
         assert_eq!(parsed.ecu_id, "TCP1", "ECU ID from WEID");
         assert_eq!(parsed.apid, Some("APP2".to_string()));
-        assert_eq!(parsed.payload_text, "World");
+        assert_eq!(parsed.payload_text(), "World");
     }
 }

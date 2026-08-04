@@ -9,11 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verbose DLT arguments with variable name/unit metadata now follow the AUTOSAR field order and decode correctly.
+- Stream recovery no longer loses valid storage-header messages after a corrupt raw header declares an incomplete oversized message.
+- File open, decompression, and read failures are now reported in the UI instead of silently showing an empty viewer.
+- Local `.claude` session metadata is excluded from crates.io packages, and the packaged README now uses a stable demo image URL.
 - `Ctrl+b` (page up) works in the File Explorer again — it was being swallowed by the `b` (batch load) binding.
 - Mouse capture is no longer enabled. It was never used for anything, and it blocked the terminal's native text selection, so you couldn't copy log text with the mouse.
 
 ### Changed
 
+- Payload text is now decoded only when displayed, searched, or exported, reducing memory use for large captures while retaining the original bytes for hex views.
+- File and TCP ingestion now use a bounded queue, and each UI tick processes a bounded batch to keep large or fast streams responsive.
+- The log viewer now builds only visible rows, caches sidebar counts, incrementally merges new timestamp-sorted batches, and shares source paths between entries, substantially reducing CPU, allocations, and memory use on large logs.
+- Tagged releases must pass format, Clippy, tests, package, MSRV, and tag-version checks before a GitHub Release is created.
+- Sample DLT generation is now an explicit ignored test, so the normal test suite does not write into the repository.
 - Rewrote the README, and documented previously undocumented behavior: paging keys in the detail view, `Esc` in the explorer, export file naming, and the single-entry limitation when reading `.zip` archives.
 - Homebrew tap formula is now updated automatically on tagged releases (see `RELEASING.md` for the one-time token setup).
 

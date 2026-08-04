@@ -51,6 +51,7 @@ fn build_dlt_message(ecu: &str, apid: &str, ctid: &str, log_level: u8, payload: 
 }
 
 #[test]
+#[ignore = "generates sample.dlt in the project root"]
 fn generate_sample_dlt_file() {
     let out_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample.dlt");
 

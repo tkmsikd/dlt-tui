@@ -4,6 +4,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+use std::ops::Range;
 
 use crate::app::{App, AppScreen};
 
@@ -117,87 +118,90 @@ pub fn draw(f: &mut Frame, app: &App) {
                 .height(1)
                 .bottom_margin(1);
 
-            let rows = app
-                .filtered_log_indices
-                .iter()
-                .enumerate()
-                .map(|(i, &idx)| {
-                    let entry = &app.logs[idx];
-                    let log = &entry.message;
-                    let (level_str, level_color) = match &log.log_level {
-                        Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
-                        Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
-                        Some(crate::parser::LogLevel::Warn) => ("WRN", Color::Yellow),
-                        Some(crate::parser::LogLevel::Info) => ("INF", Color::Green),
-                        Some(crate::parser::LogLevel::Debug) => ("DBG", Color::Blue),
-                        Some(crate::parser::LogLevel::Verbose) => ("VRB", Color::Gray),
-                        Some(crate::parser::LogLevel::Unknown(_)) => ("UNK", Color::DarkGray),
-                        None => ("---", Color::Reset),
-                    };
+            let row_capacity = viewer_chunks[1].height.saturating_sub(4).max(1) as usize;
+            let row_range = visible_log_range(
+                app.filtered_log_indices.len(),
+                app.logs_selected_index,
+                row_capacity,
+            );
+            let row_start = row_range.start;
+            let visible_indices = &app.filtered_log_indices[row_range];
+            let rows = visible_indices.iter().enumerate().map(|(visible_i, &idx)| {
+                let i = row_start + visible_i;
+                let entry = &app.logs[idx];
+                let log = &entry.message;
+                let (level_str, level_color) = match &log.log_level {
+                    Some(crate::parser::LogLevel::Fatal) => ("FTL", Color::Red),
+                    Some(crate::parser::LogLevel::Error) => ("ERR", Color::LightRed),
+                    Some(crate::parser::LogLevel::Warn) => ("WRN", Color::Yellow),
+                    Some(crate::parser::LogLevel::Info) => ("INF", Color::Green),
+                    Some(crate::parser::LogLevel::Debug) => ("DBG", Color::Blue),
+                    Some(crate::parser::LogLevel::Verbose) => ("VRB", Color::Gray),
+                    Some(crate::parser::LogLevel::Unknown(_)) => ("UNK", Color::DarkGray),
+                    None => ("---", Color::Reset),
+                };
 
-                    let payload_display = if app.horizontal_scroll > 0 {
-                        let chars: String = log
-                            .payload_text
-                            .chars()
-                            .skip(app.horizontal_scroll)
-                            .collect();
-                        if chars.is_empty() {
-                            " ".to_string()
+                let payload_display = if app.horizontal_scroll > 0 {
+                    let chars: String = log
+                        .payload_text()
+                        .chars()
+                        .skip(app.horizontal_scroll)
+                        .collect();
+                    if chars.is_empty() {
+                        " ".to_string()
+                    } else {
+                        chars
+                    }
+                } else {
+                    log.payload_text().to_string()
+                };
+
+                let time_str = if app.show_time_delta {
+                    if i == 0 {
+                        // BUG-3: if timestamp is 0 (no storage header), show N/A
+                        if log.timestamp_us == 0 {
+                            "N/A".to_string()
                         } else {
-                            chars
+                            "+0.000000s".to_string()
                         }
                     } else {
-                        log.payload_text.clone()
-                    };
-
-                    let time_str = if app.show_time_delta {
-                        if i == 0 {
-                            // BUG-3: if timestamp is 0 (no storage header), show N/A
-                            if log.timestamp_us == 0 {
-                                "N/A".to_string()
-                            } else {
-                                "+0.000000s".to_string()
-                            }
+                        let prev_idx = app.filtered_log_indices[i - 1];
+                        let prev_log = &app.logs[prev_idx].message;
+                        // BUG-3: if either timestamp is 0, delta is meaningless
+                        if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
+                            "N/A".to_string()
                         } else {
-                            let prev_idx = app.filtered_log_indices[i - 1];
-                            let prev_log = &app.logs[prev_idx].message;
-                            // BUG-3: if either timestamp is 0, delta is meaningless
-                            if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
-                                "N/A".to_string()
+                            let is_negative = log.timestamp_us < prev_log.timestamp_us;
+                            let diff_abs = if is_negative {
+                                prev_log.timestamp_us - log.timestamp_us
                             } else {
-                                let is_negative = log.timestamp_us < prev_log.timestamp_us;
-                                let diff_abs = if is_negative {
-                                    prev_log.timestamp_us - log.timestamp_us
-                                } else {
-                                    log.timestamp_us - prev_log.timestamp_us
-                                };
-                                let sign = if is_negative { "-" } else { "+" };
-                                format!(
-                                    "{}{}.{:06}s",
-                                    sign,
-                                    diff_abs / 1_000_000,
-                                    diff_abs % 1_000_000
-                                )
-                            }
+                                log.timestamp_us - prev_log.timestamp_us
+                            };
+                            let sign = if is_negative { "-" } else { "+" };
+                            format!(
+                                "{}{}.{:06}s",
+                                sign,
+                                diff_abs / 1_000_000,
+                                diff_abs % 1_000_000
+                            )
                         }
-                    } else {
-                        format_timestamp(log.timestamp_us)
-                    };
+                    }
+                } else {
+                    format_timestamp(log.timestamp_us)
+                };
 
-                    let cells = vec![
-                        ratatui::widgets::Cell::from(level_str)
-                            .style(Style::default().fg(level_color)),
-                        ratatui::widgets::Cell::from(time_str),
-                        ratatui::widgets::Cell::from(log.ecu_id.as_str()),
-                        ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
-                        ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-")).style(
-                            Style::default().fg(ctx_color(log.ctid.as_deref().unwrap_or("-"))),
-                        ),
-                        ratatui::widgets::Cell::from(entry.source_name()),
-                        ratatui::widgets::Cell::from(payload_display),
-                    ];
-                    ratatui::widgets::Row::new(cells).height(1)
-                });
+                let cells = vec![
+                    ratatui::widgets::Cell::from(level_str).style(Style::default().fg(level_color)),
+                    ratatui::widgets::Cell::from(time_str),
+                    ratatui::widgets::Cell::from(log.ecu_id.as_str()),
+                    ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
+                    ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-"))
+                        .style(Style::default().fg(ctx_color(log.ctid.as_deref().unwrap_or("-")))),
+                    ratatui::widgets::Cell::from(entry.source_name()),
+                    ratatui::widgets::Cell::from(payload_display),
+                ];
+                ratatui::widgets::Row::new(cells).height(1)
+            });
 
             // Table widths: Level, Time, ECU, APP, CTX, Source, Payload
             let widths = [
@@ -223,7 +227,13 @@ pub fn draw(f: &mut Frame, app: &App) {
 
             // Note: ratatui::widgets::Table uses TableState instead of ListState
             let mut state = ratatui::widgets::TableState::default();
-            state.select(Some(app.logs_selected_index));
+            if !app.filtered_log_indices.is_empty() {
+                state.select(Some(
+                    app.logs_selected_index
+                        .min(app.filtered_log_indices.len() - 1)
+                        - row_start,
+                ));
+            }
             f.render_stateful_widget(table, viewer_chunks[1], &mut state);
         }
         AppScreen::LogDetail => {
@@ -245,7 +255,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     log.ctid.as_deref().unwrap_or("-"),
                     entry.source_name(),
                     log.log_level,
-                    log.payload_text
+                    log.payload_text()
                 );
 
                 let meta_para = Paragraph::new(meta_text).block(
@@ -257,7 +267,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 f.render_widget(meta_para, detail_chunks[0]);
 
                 let mut hex_lines = String::new();
-                for chunk in log.payload_raw.chunks(16) {
+                for chunk in log.payload_raw().chunks(16) {
                     let hex_parts: Vec<String> =
                         chunk.iter().map(|b| format!("{:02X}", b)).collect();
                     let char_parts: String = chunk
@@ -283,7 +293,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     Block::default()
                         .title(format!(
                             "Payload Hex Dump ({} bytes)",
-                            log.payload_raw.len()
+                            log.payload_raw().len()
                         ))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Magenta)),
@@ -388,32 +398,51 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(status, chunks[1]);
 }
 
+fn visible_log_range(len: usize, selected: usize, capacity: usize) -> Range<usize> {
+    if len == 0 || capacity == 0 {
+        return 0..0;
+    }
+
+    let selected = selected.min(len - 1);
+    let start = selected.saturating_sub(capacity - 1);
+    start..(start + capacity).min(len)
+}
+
 fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let sidebar_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(area);
     let selected_source = app.selected_entry().map(|entry| entry.source_name());
     let selected_ctx = app
         .selected_entry()
         .and_then(|entry| entry.message.ctid.as_deref())
         .unwrap_or("-");
 
-    let source_items = app.source_counts().into_iter().map(|(source, count)| {
-        let marker = if Some(source.as_str()) == selected_source {
-            ">"
-        } else {
-            " "
-        };
-        ListItem::new(format!("{} {:>5} {}", marker, count, source))
-    });
+    let source_capacity = sidebar_chunks[0].height.saturating_sub(2) as usize;
+    let source_items = app
+        .source_counts()
+        .iter()
+        .take(source_capacity)
+        .map(|(source, count)| {
+            let marker = if Some(source.as_str()) == selected_source {
+                ">"
+            } else {
+                " "
+            };
+            ListItem::new(format!("{} {:>5} {}", marker, count, source))
+        });
 
-    let ctx_items = app.ctx_counts().into_iter().map(|(ctx, count)| {
-        let marker = if ctx == selected_ctx { ">" } else { " " };
-        ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
-            .style(Style::default().fg(ctx_color(&ctx)))
-    });
-
-    let sidebar_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-        .split(area);
+    let ctx_capacity = sidebar_chunks[1].height.saturating_sub(2) as usize;
+    let ctx_items = app
+        .ctx_counts()
+        .iter()
+        .take(ctx_capacity)
+        .map(|(ctx, count)| {
+            let marker = if ctx == selected_ctx { ">" } else { " " };
+            ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
+                .style(Style::default().fg(ctx_color(ctx)))
+        });
 
     let sources = List::new(source_items).block(
         Block::default()
@@ -484,15 +513,14 @@ mod tests {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
         app.logs.push(LogEntry::new(
-            DltMessage {
-                timestamp_us: 1_640_995_200_000_000,
-                ecu_id: "ECU1".to_string(),
-                apid: Some("DIAG".to_string()),
-                ctid: Some("CAN1".to_string()),
-                log_level: Some(crate::parser::LogLevel::Error),
-                payload_text: "CAN bus timeout".to_string(),
-                payload_raw: b"CAN bus timeout".to_vec(),
-            },
+            DltMessage::new(
+                1_640_995_200_000_000,
+                "ECU1".to_string(),
+                Some("DIAG".to_string()),
+                Some("CAN1".to_string()),
+                Some(crate::parser::LogLevel::Error),
+                b"CAN bus timeout".to_vec(),
+            ),
             Some(PathBuf::from("diag_can1.dlt")),
             0,
         ));
@@ -519,19 +547,72 @@ mod tests {
     }
 
     #[test]
+    fn test_visible_log_range_tracks_selection() {
+        assert_eq!(visible_log_range(0, 0, 10), 0..0);
+        assert_eq!(visible_log_range(100, 0, 10), 0..10);
+        assert_eq!(visible_log_range(100, 9, 10), 0..10);
+        assert_eq!(visible_log_range(100, 10, 10), 1..11);
+        assert_eq!(visible_log_range(100, 99, 10), 90..100);
+    }
+
+    #[test]
+    fn test_log_viewer_only_renders_selected_window() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..100 {
+            let text = format!("message-{i:03}");
+            app.logs.push(LogEntry::new(
+                DltMessage::new(
+                    i + 1,
+                    "ECU1".to_string(),
+                    None,
+                    None,
+                    None,
+                    text.into_bytes(),
+                ),
+                None,
+                0,
+            ));
+        }
+        app.apply_filter();
+        app.logs_selected_index = 99;
+        assert!(
+            app.logs
+                .iter()
+                .all(|entry| !entry.message.payload_text_is_initialized())
+        );
+
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("message-099"));
+        assert!(!text.contains("message-000"), "{text}");
+        let initialized = app
+            .logs
+            .iter()
+            .filter(|entry| entry.message.payload_text_is_initialized())
+            .count();
+        assert!(initialized > 0);
+        assert!(initialized < app.logs.len());
+        assert!(!app.logs[0].message.payload_text_is_initialized());
+        assert!(app.logs[99].message.payload_text_is_initialized());
+    }
+
+    #[test]
     fn test_draw_log_detail_screen() {
         let mut app = App::new();
         app.screen = AppScreen::LogDetail;
         app.logs.push(LogEntry::new(
-            DltMessage {
-                timestamp_us: 5_000_000,
-                ecu_id: "ECU2".to_string(),
-                apid: Some("NAV".to_string()),
-                ctid: Some("GPS1".to_string()),
-                log_level: Some(crate::parser::LogLevel::Info),
-                payload_text: "GPS fix acquired".to_string(),
-                payload_raw: b"GPS fix acquired".to_vec(),
-            },
+            DltMessage::new(
+                5_000_000,
+                "ECU2".to_string(),
+                Some("NAV".to_string()),
+                Some("GPS1".to_string()),
+                Some(crate::parser::LogLevel::Info),
+                b"GPS fix acquired".to_vec(),
+            ),
             Some(PathBuf::from("nav_gps1.dlt")),
             0,
         ));
@@ -592,15 +673,14 @@ mod tests {
         app.screen = AppScreen::LogDetail;
         // Add a log but apply a filter that matches nothing
         app.logs.push(LogEntry::new(
-            DltMessage {
-                timestamp_us: 1_000_000,
-                ecu_id: "ECU1".to_string(),
-                apid: Some("APP1".to_string()),
-                ctid: Some("CTX1".to_string()),
-                log_level: Some(crate::parser::LogLevel::Info),
-                payload_text: "test message".to_string(),
-                payload_raw: b"test message".to_vec(),
-            },
+            DltMessage::new(
+                1_000_000,
+                "ECU1".to_string(),
+                Some("APP1".to_string()),
+                Some("CTX1".to_string()),
+                Some(crate::parser::LogLevel::Info),
+                b"test message".to_vec(),
+            ),
             None,
             0,
         ));

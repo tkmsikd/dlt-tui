@@ -7,7 +7,18 @@ Steps to cut a new dlt-tui release.
 1. Bump the version in `Cargo.toml` (`[package] version = "X.Y.Z"`).
 2. Add a new entry at the top of `CHANGELOG.md` following the existing
    [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
-3. Commit both changes:
+3. Run the same checks as CI and verify the crates.io package before creating a tag:
+
+   ```bash
+   cargo fmt --check
+   cargo clippy --all-targets -- -D warnings
+   cargo test --all-targets --locked
+   cargo publish --dry-run --locked
+   cargo package --list
+   ```
+
+   Review the package list for local files, secrets, and generated artifacts.
+4. Commit both changes:
 
    ```bash
    git add Cargo.toml CHANGELOG.md

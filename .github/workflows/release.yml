@@ -6,15 +6,70 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify tag matches crate version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must have the form vX.Y.Z; got ${TAG}" >&2
+            exit 1
+          fi
+
+          crate_version="$(
+            cargo metadata --locked --no-deps --format-version 1 |
+              jq -r --arg manifest "${GITHUB_WORKSPACE}/Cargo.toml" \
+                '.packages[] | select(.manifest_path == $manifest) | .version'
+          )"
+          if [[ -z "${crate_version}" ]]; then
+            echo "Could not determine the root crate version" >&2
+            exit 1
+          fi
+          if [[ "${TAG}" != "v${crate_version}" ]]; then
+            echo "Release tag ${TAG} does not match Cargo.toml version ${crate_version}" >&2
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets --locked
+
+      - name: Verify package
+        run: cargo package --locked
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Check MSRV
+        run: cargo +1.88.0 check --all-targets --locked
+
   create-release:
     name: Create GitHub Release
+    needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/create-gh-release-action@v1
@@ -26,6 +81,8 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:

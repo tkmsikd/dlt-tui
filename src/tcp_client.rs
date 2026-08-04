@@ -107,7 +107,22 @@ where
                     }
                 }
                 Err(parser::ParseError::Incomplete(_)) => {
-                    // Need more data
+                    // A corrupt raw header can claim a huge message length and hide a later,
+                    // reliable storage-header sync point. Recover immediately in that case;
+                    // otherwise keep the partial message until more bytes arrive.
+                    if !remaining.starts_with(b"DLT\x01")
+                        && let Some(pos) = remaining[1..]
+                            .windows(4)
+                            .position(|window| window == b"DLT\x01")
+                    {
+                        let skipped = 1 + pos;
+                        consumed += skipped;
+                        total_skipped += skipped;
+                        if let Some(skipped_bytes) = &skipped_bytes {
+                            skipped_bytes.store(total_skipped, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
                     break;
                 }
                 Err(parser::ParseError::InvalidMagicNumber)
@@ -198,7 +213,7 @@ mod tests {
         stream_from_reader(cursor, tx).unwrap();
 
         let msg = rx.recv().unwrap();
-        assert_eq!(msg.payload_text, "Hello TCP");
+        assert_eq!(msg.payload_text(), "Hello TCP");
         assert_eq!(msg.ecu_id, "ECU1");
     }
 
@@ -216,9 +231,9 @@ mod tests {
 
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0].payload_text, "Message 1");
-        assert_eq!(msgs[1].payload_text, "Message 2");
-        assert_eq!(msgs[2].payload_text, "Message 3");
+        assert_eq!(msgs[0].payload_text(), "Message 1");
+        assert_eq!(msgs[1].payload_text(), "Message 2");
+        assert_eq!(msgs[2].payload_text(), "Message 3");
     }
 
     #[test]
@@ -234,7 +249,7 @@ mod tests {
 
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].payload_text, "After garbage");
+        assert_eq!(msgs[0].payload_text(), "After garbage");
     }
 
     #[test]
@@ -262,8 +277,23 @@ mod tests {
 
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].payload_text, "Msg1");
-        assert_eq!(msgs[1].payload_text, "Msg2");
+        assert_eq!(msgs[0].payload_text(), "Msg1");
+        assert_eq!(msgs[1].payload_text(), "Msg2");
+    }
+
+    #[test]
+    fn test_stream_recovers_from_bogus_incomplete_raw_header() {
+        let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
+        data.extend(build_dlt_message_with_storage_header(b"After bogus header"));
+
+        let cursor = Cursor::new(data);
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(cursor, tx).unwrap();
+
+        let msgs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].payload_text(), "After bogus header");
     }
 
     #[test]
@@ -320,7 +350,7 @@ mod tests {
             1,
             "Should recover the valid message after garbage"
         );
-        assert_eq!(msgs[0].payload_text, "Survived");
+        assert_eq!(msgs[0].payload_text(), "Survived");
     }
 
     /// Buffer guard: pure garbage should not panic or OOM.
@@ -361,7 +391,7 @@ mod tests {
         let msgs: Vec<_> = rx.try_iter().collect();
         // The valid message at the end should be recovered
         assert!(
-            msgs.iter().any(|m| m.payload_text == "After adversarial"),
+            msgs.iter().any(|m| m.payload_text() == "After adversarial"),
             "Should recover valid message after adversarial data"
         );
     }
