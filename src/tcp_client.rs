@@ -101,29 +101,22 @@ where
         .unwrap_or(0);
 
     loop {
-        match reader.read(&mut read_buf) {
-            Ok(0) => {
-                // Any bytes still buffered cannot form a complete message and
-                // must be reported as skipped rather than silently discarded.
-                if !buffer.is_empty() {
-                    total_skipped += buffer.len();
-                    if let Some(skipped_bytes) = &skipped_bytes {
-                        skipped_bytes.store(total_skipped, Ordering::Relaxed);
-                    }
-                }
-                break;
-            }
+        let reached_eof = match reader.read(&mut read_buf) {
+            Ok(0) => true,
             Ok(n) => {
                 buffer.extend_from_slice(&read_buf[..n]);
+                false
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // Read timeout — no data available yet, try parsing what we have
+                false
             }
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {
                 // Same as WouldBlock on some platforms
+                false
             }
             Err(e) => return Err(e),
-        }
+        };
 
         // Try to parse as many messages as possible from the buffer
         let mut consumed = 0;
@@ -142,13 +135,18 @@ where
                 }
                 Err(parser::ParseError::Incomplete(_)) => {
                     // A corrupt header can claim a huge body and hide a later
-                    // storage frame. Only resync once that later frame is
-                    // itself complete, so embedded magic in a partial payload
-                    // does not cause premature recovery.
-                    if remaining.len() > 1
-                        && let Some(pos) =
-                            parser::find_next_complete_storage_message(&remaining[1..])
-                    {
+                    // message. While the stream is open, only the strong
+                    // storage magic is safe enough to resync; at EOF, a
+                    // complete raw frame can also be salvaged without racing
+                    // a still-arriving outer payload.
+                    let recovery_pos = remaining.get(1..).and_then(|tail| {
+                        if reached_eof {
+                            parser::find_next_complete_message(tail)
+                        } else {
+                            parser::find_next_complete_storage_message(tail)
+                        }
+                    });
+                    if let Some(pos) = recovery_pos {
                         let skipped = 1 + pos;
                         consumed += skipped;
                         total_skipped += skipped;
@@ -185,6 +183,18 @@ where
             buffer.drain(..consumed);
         }
 
+        if reached_eof {
+            // Any bytes still buffered cannot form a complete message and
+            // must be reported as skipped rather than silently discarded.
+            if !buffer.is_empty() {
+                total_skipped += buffer.len();
+                if let Some(skipped_bytes) = &skipped_bytes {
+                    skipped_bytes.store(total_skipped, Ordering::Relaxed);
+                }
+            }
+            break;
+        }
+
         // Guard: prevent unbounded buffer growth from unparseable data
         if buffer.len() > MAX_BUFFER_SIZE {
             let search_start = buffer.len() / 2;
@@ -212,9 +222,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::io::Cursor;
     use std::net::Ipv4Addr;
     use std::sync::mpsc;
+
+    struct ScriptedReader {
+        steps: VecDeque<io::Result<Vec<u8>>>,
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.steps.pop_front() {
+                Some(Ok(data)) => {
+                    assert!(data.len() <= buffer.len());
+                    buffer[..data.len()].copy_from_slice(&data);
+                    Ok(data.len())
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(0),
+            }
+        }
+    }
 
     #[test]
     fn test_connect_tries_all_resolved_endpoints() {
@@ -403,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_recovers_from_bogus_incomplete_raw_header() {
+    fn test_stream_recovers_storage_message_after_bogus_incomplete_raw_header() {
         let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
         data.extend(build_dlt_message_with_storage_header(b"After bogus header"));
 
@@ -415,6 +444,108 @@ mod tests {
         let msgs: Vec<_> = rx.try_iter().collect();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].payload_text(), "After bogus header");
+    }
+
+    #[test]
+    fn test_stream_recovers_raw_message_after_bogus_incomplete_raw_header() {
+        let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
+        data.extend(build_dlt_message_without_storage_header(
+            b"Raw after bogus header",
+        ));
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_from_reader_with_skipped(Cursor::new(data), tx, Arc::clone(&skipped_bytes)).unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Raw after bogus header");
+    }
+
+    #[test]
+    fn test_raw_eof_recovery_counts_prefix_and_trailer_once() {
+        let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
+        data.extend(build_dlt_message_without_storage_header(b"Recovered"));
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(7));
+
+        stream_from_reader_with_skipped(Cursor::new(data), tx, Arc::clone(&skipped_bytes)).unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Recovered");
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 14);
+    }
+
+    #[test]
+    fn test_raw_eof_recovery_stops_cleanly_when_handler_closes() {
+        let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
+        data.extend(build_dlt_message_without_storage_header(b"Recovered"));
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        let skipped_bytes = Arc::new(AtomicUsize::new(11));
+        let mut received = 0;
+
+        stream_from_reader_with_handler(Cursor::new(data), Arc::clone(&skipped_bytes), |_| {
+            received += 1;
+            false
+        })
+        .unwrap();
+
+        assert_eq!(received, 1);
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 15);
+    }
+
+    #[test]
+    fn test_stream_waits_for_outer_raw_message_with_embedded_raw_frame() {
+        let embedded = build_dlt_message_without_storage_header(b"Embedded");
+        let mut outer_payload = b"Before".to_vec();
+        outer_payload.extend_from_slice(&embedded);
+        outer_payload.extend_from_slice(b"After");
+        let outer = build_dlt_message_without_storage_header(&outer_payload);
+        let split = 14 + b"Before".len() + embedded.len();
+        let reader = ScriptedReader {
+            steps: VecDeque::from([
+                Ok(outer[..split].to_vec()),
+                Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                Err(io::Error::from(io::ErrorKind::TimedOut)),
+                Ok(outer[split..].to_vec()),
+            ]),
+        };
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_from_reader_with_skipped(reader, tx, Arc::clone(&skipped_bytes)).unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_raw(), outer_payload);
+    }
+
+    #[test]
+    fn test_eof_salvages_complete_raw_embedded_in_truncated_outer_frame() {
+        let embedded = build_dlt_message_without_storage_header(b"Embedded");
+        let mut full_payload = b"Before".to_vec();
+        full_payload.extend_from_slice(&embedded);
+        full_payload.extend_from_slice(b"Missing tail");
+        let mut truncated_outer = build_dlt_message_without_storage_header(&full_payload);
+        truncated_outer.truncate(14 + b"Before".len() + embedded.len());
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_from_reader_with_skipped(
+            Cursor::new(truncated_outer),
+            tx,
+            Arc::clone(&skipped_bytes),
+        )
+        .unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 20);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Embedded");
     }
 
     #[test]

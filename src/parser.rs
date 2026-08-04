@@ -582,9 +582,27 @@ pub fn find_next_sync(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Finds a later storage-framed message that is already complete and valid.
-/// This is used to recover from corrupt headers that claim an oversized body
-/// without mistaking an incomplete payload's embedded magic for a sync point.
+/// Finds the first later, syntactically complete DLT message.
+/// Callers use this only once no more bytes can complete the current frame.
+/// Raw frames have no magic marker, so this is an EOF salvage heuristic rather
+/// than proof that the candidate was not embedded in a truncated payload.
+pub(crate) fn find_next_complete_message(data: &[u8]) -> Option<usize> {
+    let mut search_offset = 0;
+
+    while search_offset < data.len() {
+        let candidate = search_offset + find_next_sync(&data[search_offset..])?;
+        if parse_dlt_message(&data[candidate..]).is_ok() {
+            return Some(candidate);
+        }
+        search_offset = candidate + 1;
+    }
+
+    None
+}
+
+/// Finds a complete storage-framed message using its strong magic marker.
+/// Streaming recovery uses this while more bytes may still arrive so a raw
+/// frame embedded in an incomplete payload is not mistaken for a boundary.
 pub(crate) fn find_next_complete_storage_message(data: &[u8]) -> Option<usize> {
     data.windows(4).enumerate().find_map(|(index, window)| {
         if window == b"DLT\x01" && parse_dlt_message(&data[index..]).is_ok() {
@@ -611,15 +629,16 @@ pub fn parse_all_messages(data: &[u8]) -> (Vec<DltMessage>, usize) {
             }
             Err(ParseError::Incomplete(_)) => {
                 if input.len() > 1
-                    && let Some(pos) = find_next_complete_storage_message(&input[1..])
+                    && let Some(pos) = find_next_complete_message(&input[1..])
                 {
                     skipped_bytes += 1 + pos;
                     input = &input[1 + pos..];
                     continue;
                 }
 
-                // No later complete storage frame exists, so retain the
-                // current candidate as a genuinely incomplete message.
+                // This is the complete input buffer, so an incomplete tail is
+                // unrecoverable and must be included in the skipped count.
+                skipped_bytes += input.len();
                 break;
             }
             Err(_) => {
@@ -1119,10 +1138,49 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_all_recovers_raw_message_after_oversized_raw_length() {
+        let mut data = vec![0x21, 0x00, 0xff, 0xff];
+        let raw_message = build_spec_compliant_message(b"Recovered raw");
+        data.extend_from_slice(&raw_message[16..]);
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Recovered raw");
+    }
+
+    #[test]
     fn test_parse_all_messages_empty_input() {
         let (msgs, skipped) = parse_all_messages(&[]);
         assert_eq!(msgs.len(), 0);
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_parse_all_counts_incomplete_tail_as_skipped() {
+        let mut data = build_spec_compliant_message(b"Truncated");
+        data.pop();
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert!(messages.is_empty());
+        assert_eq!(skipped, data.len());
+    }
+
+    #[test]
+    fn test_parse_all_preserves_valid_message_before_incomplete_tail() {
+        let complete = build_spec_compliant_message(b"Complete");
+        let mut incomplete = build_spec_compliant_message(b"Incomplete");
+        incomplete.pop();
+        let mut data = complete;
+        data.extend_from_slice(&incomplete);
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Complete");
+        assert_eq!(skipped, incomplete.len());
     }
 
     #[test]
@@ -1252,6 +1310,24 @@ mod tests {
         let data = vec![0x00, 0x00, 0x21, 0x00, 0x00, 0x17, 0x00];
         let pos = find_next_sync(&data).unwrap();
         assert_eq!(pos, 2, "Should find the real standard header at position 2");
+    }
+
+    #[test]
+    fn test_find_next_complete_message_skips_incomplete_candidate() {
+        let mut data = vec![0x21, 0x00, 0xff, 0xff];
+        let raw_message = build_spec_compliant_message(b"Complete raw");
+        data.extend_from_slice(&raw_message[16..]);
+
+        assert_eq!(find_next_complete_message(&data), Some(4));
+    }
+
+    #[test]
+    fn test_find_next_complete_message_rejects_partial_candidate() {
+        let storage_message = build_spec_compliant_message(b"Partial");
+        let mut raw_message = storage_message[16..].to_vec();
+        raw_message.pop();
+
+        assert_eq!(find_next_complete_message(&raw_message), None);
     }
 
     /// FIXED BUG-1: parse_dlt_message now handles messages without storage header

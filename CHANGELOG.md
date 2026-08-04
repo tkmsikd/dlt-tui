@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Corrupt raw headers no longer cause later complete raw DLT messages to be discarded at end of input, and incomplete tails are now counted consistently as skipped bytes.
 - Release publication now supplies the repository explicitly, so the post-build asset gate can run from its checkout-free job and publish complete releases.
 - Live DLT messages now use the standard-header timestamp when no storage header is present, restoring meaningful time, delta, and ordering information in TCP mode.
 - Invalid log-level filter input now preserves the active filter and reports the accepted values instead of silently clearing it.
