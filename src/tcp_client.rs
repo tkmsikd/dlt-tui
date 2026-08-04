@@ -318,6 +318,27 @@ mod tests {
     }
 
     #[test]
+    fn test_stream_preserves_standard_header_timestamp() {
+        let mut data = Vec::new();
+        data.push(0x31); // HTYP: UEH=1, WTMS=1, VERS=1
+        data.push(0x00);
+        data.extend_from_slice(&23u16.to_be_bytes());
+        data.extend_from_slice(&42_000u32.to_be_bytes());
+        data.push(0x40);
+        data.push(1);
+        data.extend_from_slice(b"APP1");
+        data.extend_from_slice(b"CTX1");
+        data.extend_from_slice(b"Hello");
+        let (tx, rx) = mpsc::channel();
+
+        stream_from_reader(Cursor::new(data), tx).unwrap();
+
+        let message = rx.recv().unwrap();
+        assert_eq!(message.timestamp_us, 4_200_000);
+        assert_eq!(message.payload_text(), "Hello");
+    }
+
+    #[test]
     fn test_stream_multiple_messages() {
         let mut data = Vec::new();
         data.extend(build_dlt_message_with_storage_header(b"Message 1"));

@@ -373,7 +373,8 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
 
     // 1. Storage Header (16 bytes: "DLT\x01" + timestamp_sec(4 LE) + timestamp_us(4 LE) + ecu_id(4))
     //    If not present, fall back to parsing as a raw standard header (for TCP streams).
-    let (input, timestamp_us, storage_ecu_id) = if input.starts_with(b"DLT\x01") {
+    let has_storage_header = input.starts_with(b"DLT\x01");
+    let (input, mut timestamp_us, storage_ecu_id) = if has_storage_header {
         match parse_storage_header(input) {
             Ok((remaining, (ts, ecu))) => (remaining, ts, ecu),
             Err(nom::Err::Incomplete(_)) => return Err(ParseError::Incomplete(16)),
@@ -465,12 +466,15 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         if expected_remaining < consumed_extra + 4 {
             return Err(ParseError::InvalidHeader);
         }
-        let (new_input, _tms) = match take::<usize, &[u8], nom::error::Error<&[u8]>>(4usize)(input)
-        {
+        let (new_input, tms) = match take::<usize, &[u8], nom::error::Error<&[u8]>>(4usize)(input) {
             Ok(res) => res,
             Err(_) => return Err(ParseError::InvalidHeader),
         };
         input = new_input;
+        if !has_storage_header {
+            let ticks = u32::from_be_bytes([tms[0], tms[1], tms[2], tms[3]]);
+            timestamp_us = u64::from(ticks) * 100;
+        }
         consumed_extra += 4;
     }
 
@@ -899,6 +903,7 @@ mod tests {
 
         let (remaining, msg) = parse_dlt_message(&msg_bytes).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
+        assert_eq!(msg.timestamp_us, 1_640_995_200_000_000);
         assert_eq!(msg.ecu_id, "CIVI"); // Should use WEID ECU ID
         assert_eq!(msg.apid, Some("VRBT".to_string()));
         assert_eq!(msg.ctid, Some("BOOT".to_string()));
@@ -1307,5 +1312,28 @@ mod tests {
         assert_eq!(parsed.ecu_id, "TCP1", "ECU ID from WEID");
         assert_eq!(parsed.apid, Some("APP2".to_string()));
         assert_eq!(parsed.payload_text(), "World");
+    }
+
+    #[test]
+    fn test_parse_without_storage_header_uses_standard_timestamp() {
+        let mut msg = Vec::new();
+        // HTYP: UEH=1, WTMS=1, VERS=1 => 0x31
+        msg.push(0x31);
+        msg.push(0x00);
+        let total_len: u16 = 4 + 4 + 10 + 5;
+        msg.extend_from_slice(&total_len.to_be_bytes());
+        // Standard-header timestamp is big-endian and measured in 0.1 ms.
+        msg.extend_from_slice(&1_234_567u32.to_be_bytes());
+        msg.push(0x40);
+        msg.push(1);
+        msg.extend_from_slice(b"APP1");
+        msg.extend_from_slice(b"CTX1");
+        msg.extend_from_slice(b"Hello");
+
+        let (remaining, parsed) = parse_dlt_message(&msg).expect("Should parse");
+
+        assert!(remaining.is_empty());
+        assert_eq!(parsed.timestamp_us, 123_456_700);
+        assert_eq!(parsed.payload_text(), "Hello");
     }
 }

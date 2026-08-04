@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release publication now supplies the repository explicitly, so the post-build asset gate can run from its checkout-free job and publish complete releases.
+- Live DLT messages now use the standard-header timestamp when no storage header is present, restoring meaningful time, delta, and ordering information in TCP mode.
 - Invalid log-level filter input now preserves the active filter and reports the accepted values instead of silently clearing it.
 - Truncated final messages and trailing corrupt bytes are now included in the recovered-byte count instead of being silently discarded at end of input.
 - Concatenated gzip captures now load every gzip member instead of silently stopping after the first, while enforcing the decompressed-size limit across the combined stream.
