@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- TCP connections now try every resolved endpoint, so `localhost` works when the daemon listens on IPv4 or IPv6 but the other address is returned first.
 - Recovery now skips corrupt storage-framed headers that claim oversized message lengths, and storage frames with invalid DLT protocol versions are rejected.
 - Oversized raw or compressed inputs now report an error instead of being silently truncated, and directory-first ZIP archives load their first file entry correctly.
 - CLI parsing now rejects unknown or conflicting options, supports `--` for option-like paths, and preserves non-UTF-8 file names on Unix.

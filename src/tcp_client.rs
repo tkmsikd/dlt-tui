@@ -1,5 +1,5 @@
 use std::io::{self, Read};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -14,7 +14,7 @@ const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB — prevents OOM from u
 
 /// Connects to a dlt-daemon TCP socket and streams parsed messages into the channel.
 /// The connection runs on the calling thread (intended to be spawned in a background thread).
-/// Times out after 5 seconds if the host is unreachable.
+/// Each resolved endpoint times out after 5 seconds if it is unreachable.
 pub fn stream_from_tcp(addr: &str, tx: Sender<DltMessage>) -> io::Result<()> {
     stream_from_tcp_with_handler(addr, |msg| tx.send(msg).is_ok())
 }
@@ -24,13 +24,37 @@ pub fn stream_from_tcp_with_handler<F>(addr: &str, on_message: F) -> io::Result<
 where
     F: FnMut(DltMessage) -> bool,
 {
-    let socket_addr = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid address"))?;
-    let stream = TcpStream::connect_timeout(&socket_addr, CONNECT_TIMEOUT)?;
+    let stream = connect_with_timeout(addr, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
     stream_from_reader_inner(stream, None, on_message)
+}
+
+fn connect_with_timeout<A: ToSocketAddrs>(addr: A, timeout: Duration) -> io::Result<TcpStream> {
+    connect_resolved(addr.to_socket_addrs()?, |socket_addr| {
+        TcpStream::connect_timeout(&socket_addr, timeout)
+    })
+}
+
+fn connect_resolved<T, I, F>(addresses: I, mut connect: F) -> io::Result<T>
+where
+    I: IntoIterator<Item = SocketAddr>,
+    F: FnMut(SocketAddr) -> io::Result<T>,
+{
+    let mut last_error = None;
+
+    for socket_addr in addresses {
+        match connect(socket_addr) {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "address resolved to no endpoints",
+        )
+    }))
 }
 
 /// Reads DLT messages from any `Read` source and sends them through the channel.
@@ -179,7 +203,59 @@ where
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::net::Ipv4Addr;
     use std::sync::mpsc;
+
+    #[test]
+    fn test_connect_tries_all_resolved_endpoints() {
+        let first = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
+        let second = SocketAddr::from((Ipv4Addr::LOCALHOST, 2));
+        let third = SocketAddr::from((Ipv4Addr::LOCALHOST, 3));
+        let mut attempted = Vec::new();
+
+        let result = connect_resolved([first, second, third], |address| {
+            attempted.push(address);
+            if address == first {
+                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+            } else {
+                Ok("connected")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, "connected");
+        assert_eq!(attempted, [first, second]);
+    }
+
+    #[test]
+    fn test_connect_returns_last_error_when_all_endpoints_fail() {
+        let addresses = [
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 2)),
+        ];
+        let mut attempted = Vec::new();
+
+        let error = connect_resolved(addresses, |address| -> io::Result<()> {
+            attempted.push(address);
+            if address == addresses[0] {
+                Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+            } else {
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(attempted, addresses);
+    }
+
+    #[test]
+    fn test_connect_rejects_empty_resolution() {
+        let error = connect_resolved(std::iter::empty::<SocketAddr>(), |_| Ok(())).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "address resolved to no endpoints");
+    }
 
     fn build_dlt_message_with_storage_header(payload: &[u8]) -> Vec<u8> {
         let mut msg = Vec::new();
