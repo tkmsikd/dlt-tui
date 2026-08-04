@@ -1,13 +1,16 @@
-use std::fs::File;
-use std::io::{Read, Result};
-use std::path::Path;
-
-use std::io::{Cursor, Error, ErrorKind};
+use std::{
+    fs::File,
+    io::{Cursor, Error, ErrorKind, Read, Result},
+    path::Path,
+};
 
 const MAX_LOAD_SIZE: u64 = 500 * 1024 * 1024; // 500MB max per file
 
 pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
-    let path_ref = path.as_ref();
+    open_dlt_stream_with_limit(path.as_ref(), MAX_LOAD_SIZE)
+}
+
+fn open_dlt_stream_with_limit(path_ref: &Path, limit: u64) -> Result<Box<dyn Read>> {
     let file = File::open(path_ref)?;
 
     let ext = path_ref
@@ -22,24 +25,87 @@ pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
             let mut buf = [0; 0];
             #[allow(clippy::unused_io_amount)]
             decoder.read(&mut buf)?;
-            Ok(Box::new(decoder.take(MAX_LOAD_SIZE)))
+            Ok(Box::new(SizeLimitedReader::new(decoder, limit)))
         }
         "zip" => {
             let mut archive = zip::ZipArchive::new(file)?;
-            // for MVP, we just take the first file and slurp it.
-            if archive.is_empty() {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "Zip file string is empty",
-                ));
+            let mut selected_index = None;
+            for index in 0..archive.len() {
+                if archive.by_index(index)?.is_file() {
+                    selected_index = Some(index);
+                    break;
+                }
             }
-            let zipped_file = archive.by_index(0)?;
+
+            let selected_index = selected_index.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "Zip archive contains no file entries",
+                )
+            })?;
+            let zipped_file = archive.by_index(selected_index)?;
+            if zipped_file.size() > limit {
+                return Err(size_limit_error(limit));
+            }
+
             let mut buffer = Vec::new();
-            zipped_file.take(MAX_LOAD_SIZE).read_to_end(&mut buffer)?;
+            SizeLimitedReader::new(zipped_file, limit).read_to_end(&mut buffer)?;
             Ok(Box::new(Cursor::new(buffer)))
         }
-        _ => Ok(Box::new(file.take(MAX_LOAD_SIZE))),
+        _ => {
+            if file.metadata()?.len() > limit {
+                return Err(size_limit_error(limit));
+            }
+            Ok(Box::new(SizeLimitedReader::new(file, limit)))
+        }
     }
+}
+
+struct SizeLimitedReader<R> {
+    inner: R,
+    remaining: u64,
+    limit: u64,
+}
+
+impl<R> SizeLimitedReader<R> {
+    fn new(inner: R, limit: u64) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+            limit,
+        }
+    }
+}
+
+impl<R: Read> Read for SizeLimitedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        if self.remaining > 0 {
+            let allowed = usize::try_from(self.remaining)
+                .unwrap_or(usize::MAX)
+                .min(buf.len());
+            let read = self.inner.read(&mut buf[..allowed])?;
+            self.remaining -= read as u64;
+            return Ok(read);
+        }
+
+        let mut probe = [0u8; 1];
+        match self.inner.read(&mut probe) {
+            Ok(0) => Ok(0),
+            Ok(_) => Err(size_limit_error(self.limit)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn size_limit_error(limit: u64) -> Error {
+    Error::new(
+        ErrorKind::InvalidData,
+        format!("DLT input exceeds the configured size limit of {limit} bytes"),
+    )
 }
 
 #[cfg(test)]
@@ -51,6 +117,13 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
     use zip::ZipWriter;
+
+    fn read_all_with_limit(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+        let mut stream = open_dlt_stream_with_limit(path, limit)?;
+        let mut buffer = Vec::new();
+        stream.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    }
 
     #[test]
     fn test_read_uncompressed_dlt() {
@@ -103,6 +176,78 @@ mod tests {
     }
 
     #[test]
+    fn test_zip_skips_directory_entries_before_first_file() {
+        let tmp_dir = tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("directory-first.zip");
+        let dummy_data = b"DLT_AFTER_DIRECTORY";
+
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.add_directory("logs/", options).unwrap();
+        zip.start_file("logs/trace.dlt", options).unwrap();
+        zip.write_all(dummy_data).unwrap();
+        zip.finish().unwrap();
+
+        assert_eq!(read_all_with_limit(&zip_path, 1024).unwrap(), dummy_data);
+    }
+
+    #[test]
+    fn test_zip_with_only_directories_returns_error() {
+        let tmp_dir = tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("directories-only.zip");
+
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.add_directory("logs/", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let error = read_all_with_limit(&zip_path, 1024).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(error.to_string().contains("no file entries"));
+    }
+
+    #[test]
+    fn test_size_limit_accepts_exact_size_and_rejects_overflow() {
+        let tmp_dir = tempdir().unwrap();
+        let exact_path = tmp_dir.path().join("exact.dlt");
+        let oversized_path = tmp_dir.path().join("oversized.dlt");
+        fs::write(&exact_path, b"1234").unwrap();
+        fs::write(&oversized_path, b"12345").unwrap();
+
+        assert_eq!(read_all_with_limit(&exact_path, 4).unwrap(), b"1234");
+        let error = read_all_with_limit(&oversized_path, 4).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(error.to_string().contains("size limit of 4 bytes"));
+    }
+
+    #[test]
+    fn test_size_limit_applies_to_decompressed_gzip_and_zip_data() {
+        let tmp_dir = tempdir().unwrap();
+        let gzip_path = tmp_dir.path().join("oversized.gz");
+        let zip_path = tmp_dir.path().join("oversized.zip");
+
+        let gzip_file = fs::File::create(&gzip_path).unwrap();
+        let mut encoder = GzEncoder::new(gzip_file, Compression::default());
+        encoder.write_all(b"12345").unwrap();
+        encoder.finish().unwrap();
+
+        let zip_file = fs::File::create(&zip_path).unwrap();
+        let mut zip = ZipWriter::new(zip_file);
+        zip.start_file("trace.dlt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"12345").unwrap();
+        zip.finish().unwrap();
+
+        for path in [&gzip_path, &zip_path] {
+            let error = read_all_with_limit(path, 4).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidData);
+            assert!(error.to_string().contains("size limit of 4 bytes"));
+        }
+    }
+
+    #[test]
     fn test_read_broken_compression_returns_err() {
         let tmp_dir = tempdir().unwrap();
         let bad_gz_path = tmp_dir.path().join("broken.gz");
@@ -110,6 +255,25 @@ mod tests {
 
         let result = open_dlt_stream(&bad_gz_path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_truncated_gzip_returns_error_while_reading() {
+        let tmp_dir = tempdir().unwrap();
+        let gzip_path = tmp_dir.path().join("truncated.gz");
+
+        let file = fs::File::create(&gzip_path).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder.write_all(&b"DLT_PAYLOAD".repeat(1024)).unwrap();
+        encoder.finish().unwrap();
+
+        let mut compressed = fs::read(&gzip_path).unwrap();
+        compressed.truncate(compressed.len() / 2);
+        fs::write(&gzip_path, compressed).unwrap();
+
+        let mut stream = open_dlt_stream(&gzip_path).unwrap();
+        let mut buffer = Vec::new();
+        assert!(stream.read_to_end(&mut buffer).is_err());
     }
 
     #[test]

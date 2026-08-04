@@ -9,10 +9,13 @@ Steps to cut a new dlt-tui release.
    [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 3. Run the same checks as CI and verify the crates.io package before creating a tag:
 
+   Install `cargo-audit` once with `cargo install cargo-audit --locked`, then run:
+
    ```bash
    cargo fmt --check
    cargo clippy --all-targets --locked -- -D warnings
    cargo test --all-targets --locked
+   cargo audit
    cargo publish --dry-run --locked
    cargo package --list
    ```

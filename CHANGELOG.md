@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Oversized raw or compressed inputs now report an error instead of being silently truncated, and directory-first ZIP archives load their first file entry correctly.
 - CLI parsing now rejects unknown or conflicting options, supports `--` for option-like paths, and preserves non-UTF-8 file names on Unix.
 - Keyboard release events no longer repeat commands, append filter text, or dismiss notifications.
 - Invalid `DLT?` storage magic is now treated as corruption, allowing parser and TCP recovery to continue with the next valid message.
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cargo dependencies are audited against RustSec on dependency changes, on demand, and weekly so newly published advisories are detected without waiting for another release.
 - CI and release actions are pinned to verified commits, use least-privilege read access by default, and receive weekly Dependabot updates.
 - Payload text is now decoded only when displayed, searched, or exported, reducing memory use for large captures while retaining the original bytes for hex views.
 - File and TCP ingestion now use a bounded queue, and each UI tick processes a bounded batch to keep large or fast streams responsive.

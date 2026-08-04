@@ -119,9 +119,9 @@ Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In 
 ## Notes
 
 - TCP mode (`--connect`) and file or directory paths are mutually exclusive.
-- Files are read up to 500 MB each (also caps decompression, as a zip-bomb guard).
+- Files larger than 500 MB are rejected (the limit applies after decompression as a zip-bomb guard).
 - Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
-- `.zip` archives: only the first entry is read. Zip one `.dlt` per archive, or use `.gz`.
+- `.zip` archives: only the first file entry is read; directory entries are skipped. Zip one `.dlt` per archive, or use `.gz`.
 - `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
 - Payload text is sanitized before rendering, so logs containing escape sequences can't mess with your terminal.
 
