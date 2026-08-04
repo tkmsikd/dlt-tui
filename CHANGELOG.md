@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CLI parsing now rejects unknown or conflicting options, supports `--` for option-like paths, and preserves non-UTF-8 file names on Unix.
+- Keyboard release events no longer repeat commands, append filter text, or dismiss notifications.
 - Invalid `DLT?` storage magic is now treated as corruption, allowing parser and TCP recovery to continue with the next valid message.
 - Verbose DLT arguments with variable name/unit metadata now follow the AUTOSAR field order and decode correctly.
 - Stream recovery no longer loses valid storage-header messages after a corrupt raw header declares an incomplete oversized message.

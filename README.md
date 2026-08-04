@@ -50,6 +50,7 @@ dlt-tui                                  # file explorer in the current director
 dlt-tui /var/log/dlt/                    # ... or a specific directory
 dlt-tui boot.dlt session.dlt.gz          # open files as one merged timeline
 dlt-tui --connect localhost:3490         # stream from a running dlt-daemon
+dlt-tui -- -capture.dlt                  # use -- for paths beginning with '-'
 ```
 
 For an Android IVI target, forward the daemon port first:
@@ -117,6 +118,7 @@ Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In 
 
 ## Notes
 
+- TCP mode (`--connect`) and file or directory paths are mutually exclusive.
 - Files are read up to 500 MB each (also caps decompression, as a zip-bomb guard).
 - Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
 - `.zip` archives: only the first entry is read. Zip one `.dlt` per archive, or use `.gz`.

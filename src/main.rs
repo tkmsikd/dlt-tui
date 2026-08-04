@@ -4,7 +4,12 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{env, io, path::PathBuf};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    io,
+    path::PathBuf,
+};
 
 use crate::app::App;
 
@@ -16,50 +21,42 @@ pub mod parser;
 pub mod tcp_client;
 pub mod ui;
 
+#[derive(Debug, PartialEq)]
+struct CliOptions {
+    connect_addr: Option<String>,
+    file_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, PartialEq)]
+enum CliCommand {
+    Run(CliOptions),
+    Help,
+    Version,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse arguments BEFORE entering raw mode so --help and errors
     // print cleanly to the terminal without corruption.
-    let args: Vec<String> = env::args().collect();
-    let mut connect_addr: Option<String> = None;
-    let mut file_paths: Vec<PathBuf> = Vec::new();
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--connect" | "-c" => {
-                i += 1;
-                if i < args.len() {
-                    connect_addr = Some(args[i].clone());
-                } else {
-                    eprintln!("Error: --connect requires an address (e.g., localhost:3490)");
-                    std::process::exit(1);
-                }
-            }
-            "--help" | "-h" => {
-                println!("dlt-tui - A fast TUI viewer for Automotive DLT logs");
-                println!();
-                println!("USAGE:");
-                println!("    dlt-tui [OPTIONS] [PATH...]");
-                println!();
-                println!("ARGS:");
-                println!("    [PATH...]  File(s) or directory to open");
-                println!();
-                println!("OPTIONS:");
-                println!("    -c, --connect <HOST:PORT>    Connect to a dlt-daemon TCP socket");
-                println!("    -h, --help                   Print help information");
-                println!("    -V, --version                Print version information");
-                std::process::exit(0);
-            }
-            "--version" | "-V" => {
-                println!("dlt-tui {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
-            other => {
-                file_paths.push(PathBuf::from(other));
-            }
+    let cli = match parse_cli_args(env::args_os().skip(1)) {
+        Ok(cli) => cli,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            eprintln!("Try 'dlt-tui --help' for more information.");
+            std::process::exit(2);
         }
-        i += 1;
-    }
+    };
+
+    let (connect_addr, mut file_paths) = match cli {
+        CliCommand::Run(options) => (options.connect_addr, options.file_paths),
+        CliCommand::Help => {
+            print_help();
+            return Ok(());
+        }
+        CliCommand::Version => {
+            println!("dlt-tui {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    };
 
     // Restore the terminal before the default panic handler prints, so the
     // message is not swallowed by the alternate screen.
@@ -129,6 +126,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parse_cli_args(args: impl IntoIterator<Item = OsString>) -> Result<CliCommand, String> {
+    let mut connect_addr: Option<String> = None;
+    let mut file_paths: Vec<PathBuf> = Vec::new();
+    let mut positional_only = false;
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        if positional_only {
+            file_paths.push(PathBuf::from(arg));
+            continue;
+        }
+
+        if arg == OsStr::new("--") {
+            positional_only = true;
+        } else if arg == OsStr::new("--connect") || arg == OsStr::new("-c") {
+            if connect_addr.is_some() {
+                return Err("--connect may only be specified once".to_string());
+            }
+
+            let address = args.next().ok_or_else(|| {
+                "--connect requires an address (for example, localhost:3490)".to_string()
+            })?;
+            if address.to_string_lossy().starts_with('-') {
+                return Err(
+                    "--connect requires an address (for example, localhost:3490)".to_string(),
+                );
+            }
+            connect_addr = Some(
+                address
+                    .into_string()
+                    .map_err(|_| "--connect address must be valid UTF-8".to_string())?,
+            );
+        } else if arg == OsStr::new("--help") || arg == OsStr::new("-h") {
+            return Ok(CliCommand::Help);
+        } else if arg == OsStr::new("--version") || arg == OsStr::new("-V") {
+            return Ok(CliCommand::Version);
+        } else if arg.to_string_lossy().starts_with('-') && arg != OsStr::new("-") {
+            return Err(format!("unknown option '{}'", arg.to_string_lossy()));
+        } else {
+            file_paths.push(PathBuf::from(arg));
+        }
+    }
+
+    if connect_addr.is_some() && !file_paths.is_empty() {
+        return Err("--connect cannot be combined with file or directory paths".to_string());
+    }
+
+    Ok(CliCommand::Run(CliOptions {
+        connect_addr,
+        file_paths,
+    }))
+}
+
+fn print_help() {
+    println!("dlt-tui - A fast TUI viewer for Automotive DLT logs");
+    println!();
+    println!("USAGE:");
+    println!("    dlt-tui [OPTIONS] [--] [PATH...]");
+    println!();
+    println!("ARGS:");
+    println!("    [PATH...]  File(s) or directory to open");
+    println!();
+    println!("OPTIONS:");
+    println!("    -c, --connect <HOST:PORT>    Connect to a dlt-daemon TCP socket");
+    println!("    -h, --help                   Print help information");
+    println!("    -V, --version                Print version information");
+    println!("    --                           Treat remaining arguments as paths");
+}
+
 #[derive(Default)]
 struct TerminalCleanup {
     raw_mode: bool,
@@ -171,5 +237,86 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
         if app.should_quit {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<CliCommand, String> {
+        parse_cli_args(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn cli_parses_file_paths_and_connect_mode() {
+        assert_eq!(
+            parse(&["first.dlt", "second.dlt.gz"]),
+            Ok(CliCommand::Run(CliOptions {
+                connect_addr: None,
+                file_paths: vec![PathBuf::from("first.dlt"), PathBuf::from("second.dlt.gz")],
+            }))
+        );
+        assert_eq!(
+            parse(&["--connect", "localhost:3490"]),
+            Ok(CliCommand::Run(CliOptions {
+                connect_addr: Some("localhost:3490".to_string()),
+                file_paths: Vec::new(),
+            }))
+        );
+    }
+
+    #[test]
+    fn cli_rejects_unknown_and_incomplete_options() {
+        assert_eq!(
+            parse(&["--bogus"]),
+            Err("unknown option '--bogus'".to_string())
+        );
+        assert!(parse(&["-c"]).unwrap_err().contains("requires an address"));
+        assert!(
+            parse(&["-c", "--help"])
+                .unwrap_err()
+                .contains("requires an address")
+        );
+    }
+
+    #[test]
+    fn cli_rejects_conflicting_connect_inputs() {
+        assert_eq!(
+            parse(&["-c", "localhost:3490", "capture.dlt"]),
+            Err("--connect cannot be combined with file or directory paths".to_string())
+        );
+        assert_eq!(
+            parse(&["-c", "localhost:3490", "-c", "localhost:3491"]),
+            Err("--connect may only be specified once".to_string())
+        );
+    }
+
+    #[test]
+    fn cli_double_dash_preserves_option_like_paths() {
+        assert_eq!(
+            parse(&["--", "--help", "-trace.dlt"]),
+            Ok(CliCommand::Run(CliOptions {
+                connect_addr: None,
+                file_paths: vec![PathBuf::from("--help"), PathBuf::from("-trace.dlt")],
+            }))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_preserves_non_utf8_file_paths() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let path = OsString::from_vec(b"capture-\xFF.dlt".to_vec());
+        let command = parse_cli_args([path]).unwrap();
+        let CliCommand::Run(options) = command else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(
+            options.file_paths[0].as_os_str().as_bytes(),
+            b"capture-\xFF.dlt"
+        );
     }
 }

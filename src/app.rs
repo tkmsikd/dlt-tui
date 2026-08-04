@@ -663,7 +663,13 @@ impl App {
 
     /// Handle a key event. `page_size` is the number of visible rows (from terminal height).
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, page_size: usize) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+        // Some terminals report a separate release event. It must not repeat
+        // commands, append filter text, or dismiss notifications.
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
 
         // Dismiss error or info on any key press
         if self.error_message.is_some() || self.info_message.is_some() {
@@ -1597,12 +1603,34 @@ mod tests {
     // ==================== Bug verification tests ====================
 
     fn make_key(code: KeyCode) -> KeyEvent {
+        make_key_with_kind(code, crossterm::event::KeyEventKind::Press)
+    }
+
+    fn make_key_with_kind(code: KeyCode, kind: crossterm::event::KeyEventKind) -> KeyEvent {
         KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
-            kind: crossterm::event::KeyEventKind::Press,
+            kind,
             state: crossterm::event::KeyEventState::NONE,
         }
+    }
+
+    #[test]
+    fn test_key_release_is_ignored_but_repeat_is_processed() {
+        use crossterm::event::KeyEventKind;
+
+        let mut app = build_mock_app_with_logs(3);
+        app.info_message = Some("still visible".to_string());
+        app.handle_key(make_key_with_kind(KeyCode::Down, KeyEventKind::Release), 20);
+
+        assert_eq!(app.logs_selected_index, 0);
+        assert_eq!(app.info_message.as_deref(), Some("still visible"));
+
+        app.info_message = None;
+        app.handle_key(make_key_with_kind(KeyCode::Down, KeyEventKind::Repeat), 20);
+        assert_eq!(app.logs_selected_index, 1);
+        app.handle_key(make_key(KeyCode::Down), 20);
+        assert_eq!(app.logs_selected_index, 2);
     }
 
     /// FIXED: `Ctrl+b` in the Explorer must page up, not trigger batch load
