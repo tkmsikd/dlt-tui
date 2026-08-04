@@ -21,7 +21,7 @@ fn open_dlt_stream_with_limit(path_ref: &Path, limit: u64) -> Result<Box<dyn Rea
 
     match ext.as_str() {
         "gz" => {
-            let mut decoder = flate2::read::GzDecoder::new(file);
+            let mut decoder = flate2::read::MultiGzDecoder::new(file);
             let mut buf = [0; 0];
             #[allow(clippy::unused_io_amount)]
             decoder.read(&mut buf)?;
@@ -125,6 +125,12 @@ mod tests {
         Ok(buffer)
     }
 
+    fn gzip_member(data: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
     #[test]
     fn test_read_uncompressed_dlt() {
         let tmp_dir = tempdir().unwrap();
@@ -153,6 +159,44 @@ mod tests {
         let mut buffer = Vec::new();
         stream.read_to_end(&mut buffer).unwrap();
         assert_eq!(buffer, dummy_data);
+    }
+
+    #[test]
+    fn test_read_concatenated_gzip_members_with_combined_limit() {
+        let tmp_dir = tempdir().unwrap();
+        let gzip_path = tmp_dir.path().join("concatenated.gz");
+
+        let mut compressed = gzip_member(b"DLT_FIRST");
+        compressed.extend(gzip_member(b"DLT_SECOND"));
+        fs::write(&gzip_path, compressed).unwrap();
+
+        let expected = b"DLT_FIRSTDLT_SECOND";
+        assert_eq!(
+            read_all_with_limit(&gzip_path, expected.len() as u64).unwrap(),
+            expected
+        );
+
+        let error = read_all_with_limit(&gzip_path, expected.len() as u64 - 1).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("size limit of {} bytes", expected.len() - 1))
+        );
+    }
+
+    #[test]
+    fn test_concatenated_gzip_reports_truncated_later_member() {
+        let tmp_dir = tempdir().unwrap();
+        let gzip_path = tmp_dir.path().join("truncated-second-member.gz");
+
+        let mut compressed = gzip_member(b"DLT_FIRST");
+        let mut second = gzip_member(&b"DLT_SECOND".repeat(1024));
+        second.truncate(second.len() / 2);
+        compressed.extend(second);
+        fs::write(&gzip_path, compressed).unwrap();
+
+        assert!(read_all_with_limit(&gzip_path, 1024 * 1024).is_err());
     }
 
     #[test]
