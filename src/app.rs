@@ -695,8 +695,7 @@ impl App {
                         FilterInputMode::AppId => self.filter.app_id = input,
                         FilterInputMode::CtxId => self.filter.ctx_id = input,
                         FilterInputMode::MinLevel => {
-                            self.filter.min_level = match self.filter_input.to_lowercase().as_str()
-                            {
+                            let level = match self.filter_input.to_lowercase().as_str() {
                                 "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
                                 "e" | "error" => Some(crate::parser::LogLevel::Error),
                                 "w" | "warn" => Some(crate::parser::LogLevel::Warn),
@@ -705,6 +704,12 @@ impl App {
                                 "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
                                 _ => None,
                             };
+                            if !was_cleared && level.is_none() {
+                                self.error_message =
+                                    Some("Invalid level; use F/E/W/I/D/V".to_string());
+                                return;
+                            }
+                            self.filter.min_level = level;
                         }
                     }
                     self.apply_filter();
@@ -1781,6 +1786,55 @@ mod tests {
             Some("Filter cleared".to_string()),
             "Empty filter submission should show feedback"
         );
+    }
+
+    #[test]
+    fn test_invalid_level_preserves_active_filter() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.filter.min_level = Some(crate::parser::LogLevel::Warn);
+        app.apply_filter();
+        let filtered_before = app.filtered_log_indices.clone();
+        let generation_before = app.filter_generation;
+        app.logs_selected_index = 1;
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        app.handle_key(make_key(KeyCode::Char('x')), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, Some(crate::parser::LogLevel::Warn));
+        assert_eq!(app.filtered_log_indices, filtered_before);
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(app.filter_generation, generation_before);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Invalid level; use F/E/W/I/D/V")
+        );
+        assert_eq!(app.info_message, None);
+        assert_eq!(app.filter_input_mode, None);
+    }
+
+    #[test]
+    fn test_level_filter_accepts_names_and_empty_clears() {
+        let mut app = build_mock_app_with_diverse_logs();
+        let generation_before = app.filter_generation;
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        for character in "ERROR".chars() {
+            app.handle_key(make_key(KeyCode::Char(character)), 20);
+        }
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, Some(crate::parser::LogLevel::Error));
+        assert_eq!(app.filter_generation, generation_before + 1);
+        assert_eq!(app.error_message, None);
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, None);
+        assert_eq!(app.filter_generation, generation_before + 2);
+        assert_eq!(app.filtered_log_indices.len(), app.logs.len());
+        assert_eq!(app.info_message.as_deref(), Some("Filter cleared"));
     }
 
     /// BUG-2: Accessing explorer with out-of-bounds index should not panic
