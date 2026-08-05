@@ -9,11 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Corrupt raw headers no longer cause later complete raw DLT messages to be discarded at end of input, and incomplete tails are now counted consistently as skipped bytes.
+- Release publication now supplies the repository explicitly, so the post-build asset gate can run from its checkout-free job and publish complete releases.
+- Live DLT messages now use the standard-header timestamp when no storage header is present, restoring meaningful time, delta, and ordering information in TCP mode.
+- Invalid log-level filter input now preserves the active filter and reports the accepted values instead of silently clearing it.
+- Truncated final messages and trailing corrupt bytes are now included in the recovered-byte count instead of being silently discarded at end of input.
+- Concatenated gzip captures now load every gzip member instead of silently stopping after the first, while enforcing the decompressed-size limit across the combined stream.
+- TCP connections now try every resolved endpoint, so `localhost` works when the daemon listens on IPv4 or IPv6 but the other address is returned first.
+- Recovery now skips corrupt storage-framed headers that claim oversized message lengths, and storage frames with invalid DLT protocol versions are rejected.
+- Oversized raw or compressed inputs now report an error instead of being silently truncated, and directory-first ZIP archives load their first file entry correctly.
+- CLI parsing now rejects unknown or conflicting options, supports `--` for option-like paths, and preserves non-UTF-8 file names on Unix.
+- Keyboard release events no longer repeat commands, append filter text, or dismiss notifications.
+- Invalid `DLT?` storage magic is now treated as corruption, allowing parser and TCP recovery to continue with the next valid message.
+- Verbose DLT arguments with variable name/unit metadata now follow the AUTOSAR field order and decode correctly.
+- Stream recovery no longer loses valid storage-header messages after a corrupt raw header declares an incomplete oversized message.
+- File open, decompression, and read failures are now reported in the UI instead of silently showing an empty viewer.
+- Local `.claude` session metadata is excluded from crates.io packages, and the packaged README now uses a stable demo image URL.
 - `Ctrl+b` (page up) works in the File Explorer again — it was being swallowed by the `b` (batch load) binding.
 - Mouse capture is no longer enabled. It was never used for anything, and it blocked the terminal's native text selection, so you couldn't copy log text with the mouse.
 
 ### Changed
 
+- Pull requests now run cross-platform use-case scenarios, verify the crates.io package on Linux, cancel superseded CI runs, and time out stalled jobs after 15 minutes.
+- ZIP captures are now decompressed through a small bounded buffer instead of being expanded entirely in memory before parsing, so large archives begin displaying sooner and use substantially less peak memory.
+- Tagged releases must come from `master`, pass a current RustSec audit, and remain drafts until all six locked platform builds are uploaded and verified, preventing incomplete releases from being published.
+- RustSec's patched `anyhow` and `rand` releases replace stale lockfile entries, and dependency-audit warnings now fail CI instead of being silently allowed.
+- Cargo dependencies are audited against RustSec on dependency changes, on demand, and weekly so newly published advisories are detected without waiting for another release.
+- CI and release actions are pinned to verified commits, use least-privilege read access by default, and receive weekly Dependabot updates.
+- Payload text is now decoded only when displayed, searched, or exported, reducing memory use for large captures while retaining the original bytes for hex views.
+- File and TCP ingestion now use a bounded queue, and each UI tick processes a bounded batch to keep large or fast streams responsive.
+- The log viewer now builds only visible rows, caches sidebar counts, incrementally merges new timestamp-sorted batches, and shares source paths between entries, substantially reducing CPU, allocations, and memory use on large logs.
+- Tagged releases must pass format, Clippy, tests, package, MSRV, and tag-version checks before a GitHub Release is created.
+- Sample DLT generation is now an explicit ignored test, so the normal test suite does not write into the repository.
 - Rewrote the README, and documented previously undocumented behavior: paging keys in the detail view, `Esc` in the explorer, export file naming, and the single-entry limitation when reading `.zip` archives.
 - Homebrew tap formula is now updated automatically on tagged releases (see `RELEASING.md` for the one-time token setup).
 

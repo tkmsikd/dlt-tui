@@ -9,12 +9,12 @@ Thank you for your interest in contributing to dlt-tui! This project aims to pro
 If you find a bug, please [open an issue](https://github.com/tkmsikd/dlt-tui/issues/new) with:
 
 - A clear description of the problem
-- Steps to reproduce (if possible, include a sample `.dlt` file)
+- Steps to reproduce (if possible, include a minimal, anonymized `.dlt` file with confidential and identifying data removed)
 - Your environment (OS, terminal emulator, Rust version)
 
 ### Suggesting Features
 
-Feature requests are welcome! Please check the [Roadmap](README.md#roadmap) first to see if your idea is already planned. If not, [open an issue](https://github.com/tkmsikd/dlt-tui/issues/new) describing:
+Feature requests are welcome! Please check the [Planned work](README.md#planned) first to see if your idea is already planned. If not, [open an issue](https://github.com/tkmsikd/dlt-tui/issues/new) describing:
 
 - The use case (e.g., "When debugging CAN bus issues, I need to...")
 - The expected behavior
@@ -29,10 +29,10 @@ Feature requests are welcome! Please check the [Roadmap](README.md#roadmap) firs
 
 ```bash
 # Run tests
-cargo test
+cargo test --all-targets
 
 # Run clippy
-cargo clippy --all-targets
+cargo clippy --all-targets -- -D warnings
 
 # Check formatting
 cargo fmt --check
@@ -52,7 +52,7 @@ cargo test
 ### Generating sample DLT files for testing
 
 ```bash
-cargo test --test generate_sample_dlt -- --nocapture
+cargo test --test generate_sample_dlt -- --ignored --nocapture
 # Creates sample.dlt in the project root
 ```
 

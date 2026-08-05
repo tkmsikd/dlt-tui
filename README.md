@@ -9,7 +9,7 @@
 A terminal viewer for automotive DLT (Diagnostic Log and Trace) files.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="dlt-tui demo — scrolling, filtering, regex search, hex dump" width="700">
+  <img src="https://raw.githubusercontent.com/tkmsikd/dlt-tui/e6574958afaef2e2c17dca93c91a5a4efb92543b/assets/demo.gif" alt="dlt-tui demo — scrolling, filtering, regex search, hex dump" width="700">
 </p>
 
 DLT logs usually live on machines you reach over SSH: test benches, HIL rigs, CI runners. The standard tooling ([dlt-viewer](https://github.com/COVESA/dlt-viewer)) is a Qt desktop app, so in practice you end up copying files back to your workstation just to look at them. dlt-tui is the alternative I wanted: open the file where it is, filter down to the interesting part, and read it — all in the terminal, with vim-style keys.
@@ -50,6 +50,7 @@ dlt-tui                                  # file explorer in the current director
 dlt-tui /var/log/dlt/                    # ... or a specific directory
 dlt-tui boot.dlt session.dlt.gz          # open files as one merged timeline
 dlt-tui --connect localhost:3490         # stream from a running dlt-daemon
+dlt-tui -- -capture.dlt                  # use -- for paths beginning with '-'
 ```
 
 For an Android IVI target, forward the daemon port first:
@@ -117,8 +118,10 @@ Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In 
 
 ## Notes
 
-- Files are read up to 500 MB each (also caps decompression, as a zip-bomb guard).
-- `.zip` archives: only the first entry is read. Zip one `.dlt` per archive, or use `.gz`.
+- TCP mode (`--connect`) and file or directory paths are mutually exclusive.
+- Files larger than 500 MB are rejected (the limit applies after decompression as a zip-bomb guard).
+- Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
+- `.zip` archives: only the first file entry is read; directory entries are skipped. Zip one `.dlt` per archive, or use `.gz`.
 - `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
 - Payload text is sanitized before rendering, so logs containing escape sequences can't mess with your terminal.
 
@@ -128,7 +131,7 @@ Tracked as [issues](https://github.com/tkmsikd/dlt-tui/issues): bookmarking and 
 
 ## Contributing
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). `cargo test` runs the whole suite; `sample.dlt` in the repo is handy for manual testing.
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). `cargo test` runs the whole suite; you can generate `sample.dlt` for manual testing with `cargo test --test generate_sample_dlt -- --ignored --nocapture`.
 
 ## License
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogLevel {
@@ -11,15 +12,88 @@ pub enum LogLevel {
     Unknown(u8),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PayloadTextFormat {
+    Plain,
+    Verbose { noar: u8, msbf: bool },
+}
+
+#[derive(Debug, Clone)]
 pub struct DltMessage {
     pub timestamp_us: u64,
     pub ecu_id: String,
     pub apid: Option<String>,
     pub ctid: Option<String>,
     pub log_level: Option<LogLevel>,
-    pub payload_text: String,
-    pub payload_raw: Vec<u8>,
+    payload_text: OnceLock<Box<str>>,
+    payload_raw: Box<[u8]>,
+    payload_text_format: PayloadTextFormat,
+}
+
+impl DltMessage {
+    pub fn new(
+        timestamp_us: u64,
+        ecu_id: String,
+        apid: Option<String>,
+        ctid: Option<String>,
+        log_level: Option<LogLevel>,
+        payload_raw: Vec<u8>,
+    ) -> Self {
+        Self {
+            timestamp_us,
+            ecu_id,
+            apid,
+            ctid,
+            log_level,
+            payload_text: OnceLock::new(),
+            payload_raw: payload_raw.into_boxed_slice(),
+            payload_text_format: PayloadTextFormat::Plain,
+        }
+    }
+
+    fn with_verbose_payload(mut self, noar: u8, msbf: bool) -> Self {
+        self.payload_text_format = PayloadTextFormat::Verbose { noar, msbf };
+        self
+    }
+
+    pub fn payload_text(&self) -> &str {
+        self.payload_text
+            .get_or_init(|| match self.payload_text_format {
+                PayloadTextFormat::Plain => {
+                    sanitize_payload_text(&self.payload_raw).into_boxed_str()
+                }
+                PayloadTextFormat::Verbose { noar, msbf } => {
+                    let decoded = decode_verbose_payload(&self.payload_raw, noar, msbf);
+                    if decoded.is_empty() {
+                        sanitize_payload_text(&self.payload_raw).into_boxed_str()
+                    } else {
+                        decoded.into_boxed_str()
+                    }
+                }
+            })
+            .as_ref()
+    }
+
+    pub fn payload_raw(&self) -> &[u8] {
+        &self.payload_raw
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_text_is_initialized(&self) -> bool {
+        self.payload_text.get().is_some()
+    }
+}
+
+impl PartialEq for DltMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp_us == other.timestamp_us
+            && self.ecu_id == other.ecu_id
+            && self.apid == other.apid
+            && self.ctid == other.ctid
+            && self.log_level == other.log_level
+            && self.payload_raw == other.payload_raw
+            && self.payload_text_format == other.payload_text_format
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -158,24 +232,33 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
         let is_rawd = (type_info >> 10) & 1 == 1;
         let is_vari = (type_info >> 11) & 1 == 1;
 
-        // Skip VARI (variable info: name + optional unit) — bounds-checked
+        // Skip VARI (variable info: name + optional unit) — bounds-checked.
+        // Numeric arguments encode both lengths before either string:
+        // name_len, unit_len, name, unit. Other supported types only carry a name.
         if is_vari {
             if pos + 2 > payload.len() {
                 break;
             }
             let name_len = read_u16_at(payload, pos, msbf) as usize;
             pos += 2;
+
+            let unit_len = if is_sint || is_uint || is_float {
+                if pos + 2 > payload.len() {
+                    break;
+                }
+                let len = read_u16_at(payload, pos, msbf) as usize;
+                pos += 2;
+                len
+            } else {
+                0
+            };
+
             if pos + name_len > payload.len() {
                 break; // S2: prevent OOB from crafted name_len
             }
             pos += name_len;
 
-            if !(is_strg || is_rawd) {
-                if pos + 2 > payload.len() {
-                    break;
-                }
-                let unit_len = read_u16_at(payload, pos, msbf) as usize;
-                pos += 2;
+            if unit_len > 0 {
                 if pos + unit_len > payload.len() {
                     break; // S2: prevent OOB from crafted unit_len
                 }
@@ -290,15 +373,17 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
 
     // 1. Storage Header (16 bytes: "DLT\x01" + timestamp_sec(4 LE) + timestamp_us(4 LE) + ecu_id(4))
     //    If not present, fall back to parsing as a raw standard header (for TCP streams).
-    let (input, timestamp_us, storage_ecu_id) = if input.starts_with(b"DLT\x01") {
+    let has_storage_header = input.starts_with(b"DLT\x01");
+    let (input, mut timestamp_us, storage_ecu_id) = if has_storage_header {
         match parse_storage_header(input) {
             Ok((remaining, (ts, ecu))) => (remaining, ts, ecu),
             Err(nom::Err::Incomplete(_)) => return Err(ParseError::Incomplete(16)),
             Err(_) => return Err(ParseError::Incomplete(16)),
         }
     } else if input.starts_with(b"DLT") {
-        // Partial "DLT" magic — might be an incomplete storage header
-        return Err(ParseError::Incomplete(16));
+        // Four bytes are already available, so a different fourth byte is a
+        // corrupt storage magic rather than a header that could become valid.
+        return Err(ParseError::InvalidMagicNumber);
     } else {
         // No storage header — check if this looks like a valid standard header
         let htyp = input[0];
@@ -316,6 +401,10 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         Err(nom::Err::Incomplete(_)) => return Err(ParseError::Incomplete(4)),
         Err(_) => return Err(ParseError::Incomplete(4)),
     };
+
+    if (htyp >> 5) & 0x07 != 1 {
+        return Err(ParseError::InvalidHeader);
+    }
 
     // HTYP bit fields:
     // Bit 0: UEH (Use Extended Header)
@@ -377,12 +466,15 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         if expected_remaining < consumed_extra + 4 {
             return Err(ParseError::InvalidHeader);
         }
-        let (new_input, _tms) = match take::<usize, &[u8], nom::error::Error<&[u8]>>(4usize)(input)
-        {
+        let (new_input, tms) = match take::<usize, &[u8], nom::error::Error<&[u8]>>(4usize)(input) {
             Ok(res) => res,
             Err(_) => return Err(ParseError::InvalidHeader),
         };
         input = new_input;
+        if !has_storage_header {
+            let ticks = u32::from_be_bytes([tms[0], tms[1], tms[2], tms[3]]);
+            timestamp_us = u64::from(ticks) * 100;
+        }
         consumed_extra += 4;
     }
 
@@ -446,31 +538,19 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     };
     input = new_input;
 
-    // 5. Decode payload
-    let payload_text = if is_verbose && noar > 0 {
-        let decoded = decode_verbose_payload(payload_bytes, noar, msbf);
-        if decoded.is_empty() {
-            // Fallback to raw display if decoding returned nothing
-            sanitize_payload_text(payload_bytes)
-        } else {
-            decoded
-        }
-    } else {
-        sanitize_payload_text(payload_bytes)
-    };
+    let mut message = DltMessage::new(
+        timestamp_us,
+        ecu_id,
+        msg_apid,
+        msg_ctid,
+        msg_log_level,
+        payload_bytes.to_vec(),
+    );
+    if is_verbose && noar > 0 {
+        message = message.with_verbose_payload(noar, msbf);
+    }
 
-    Ok((
-        input,
-        DltMessage {
-            timestamp_us,
-            ecu_id,
-            apid: msg_apid,
-            ctid: msg_ctid,
-            log_level: msg_log_level,
-            payload_text,
-            payload_raw: payload_bytes.to_vec(),
-        },
-    ))
+    Ok((input, message))
 }
 
 /// Find the next potential DLT message start position in the data.
@@ -502,6 +582,37 @@ pub fn find_next_sync(data: &[u8]) -> Option<usize> {
     None
 }
 
+/// Finds the first later, syntactically complete DLT message.
+/// Callers use this only once no more bytes can complete the current frame.
+/// Raw frames have no magic marker, so this is an EOF salvage heuristic rather
+/// than proof that the candidate was not embedded in a truncated payload.
+pub(crate) fn find_next_complete_message(data: &[u8]) -> Option<usize> {
+    let mut search_offset = 0;
+
+    while search_offset < data.len() {
+        let candidate = search_offset + find_next_sync(&data[search_offset..])?;
+        if parse_dlt_message(&data[candidate..]).is_ok() {
+            return Some(candidate);
+        }
+        search_offset = candidate + 1;
+    }
+
+    None
+}
+
+/// Finds a complete storage-framed message using its strong magic marker.
+/// Streaming recovery uses this while more bytes may still arrive so a raw
+/// frame embedded in an incomplete payload is not mistaken for a boundary.
+pub(crate) fn find_next_complete_storage_message(data: &[u8]) -> Option<usize> {
+    data.windows(4).enumerate().find_map(|(index, window)| {
+        if window == b"DLT\x01" && parse_dlt_message(&data[index..]).is_ok() {
+            Some(index)
+        } else {
+            None
+        }
+    })
+}
+
 /// Parse all DLT messages from a byte buffer with error recovery.
 /// When a parse error occurs, scans ahead for the next valid sync marker
 /// instead of stopping. Returns the parsed messages and the count of bytes skipped.
@@ -517,7 +628,17 @@ pub fn parse_all_messages(data: &[u8]) -> (Vec<DltMessage>, usize) {
                 input = remaining;
             }
             Err(ParseError::Incomplete(_)) => {
-                // Not enough data for the current message; stop
+                if input.len() > 1
+                    && let Some(pos) = find_next_complete_message(&input[1..])
+                {
+                    skipped_bytes += 1 + pos;
+                    input = &input[1 + pos..];
+                    continue;
+                }
+
+                // This is the complete input buffer, so an incomplete tail is
+                // unrecoverable and must be included in the skipped count.
+                skipped_bytes += input.len();
                 break;
             }
             Err(_) => {
@@ -624,6 +745,21 @@ mod tests {
         arg
     }
 
+    /// Build a verbose uint32 argument with variable name and unit metadata.
+    fn build_verbose_uint32_arg_with_vari(val: u32, name: &str, unit: &str) -> Vec<u8> {
+        let mut arg = Vec::new();
+        let type_info: u32 = 0x0000_0843; // VARI | UINT | TYLE=3
+        arg.extend_from_slice(&type_info.to_le_bytes());
+        arg.extend_from_slice(&((name.len() + 1) as u16).to_le_bytes());
+        arg.extend_from_slice(&((unit.len() + 1) as u16).to_le_bytes());
+        arg.extend_from_slice(name.as_bytes());
+        arg.push(0);
+        arg.extend_from_slice(unit.as_bytes());
+        arg.push(0);
+        arg.extend_from_slice(&val.to_le_bytes());
+        arg
+    }
+
     /// Build a verbose sint32 argument
     fn build_verbose_sint32_arg(val: i32) -> Vec<u8> {
         let mut arg = Vec::new();
@@ -642,11 +778,18 @@ mod tests {
 
         let (remaining, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
+        assert!(!msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), b"Hello DLT");
+        assert!(!msg.payload_text_is_initialized());
         assert_eq!(msg.ecu_id, "ECU1");
         assert_eq!(msg.apid, Some("APP1".to_string()));
         assert_eq!(msg.ctid, Some("CTX1".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
-        assert_eq!(msg.payload_text, "Hello DLT");
+        assert_eq!(msg.payload_text(), "Hello DLT");
+        assert!(msg.payload_text_is_initialized());
+
+        let first = msg.payload_text().as_ptr();
+        assert_eq!(msg.payload_text().as_ptr(), first);
     }
 
     #[test]
@@ -657,7 +800,7 @@ mod tests {
         let (remaining, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
         assert_eq!(
-            msg.payload_text,
+            msg.payload_text(),
             "Daemon launched. Starting to output traces..."
         );
         assert_eq!(msg.log_level, Some(LogLevel::Info));
@@ -669,7 +812,7 @@ mod tests {
         let data = build_verbose_message(&payload);
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "42");
+        assert_eq!(msg.payload_text(), "42");
     }
 
     #[test]
@@ -678,7 +821,7 @@ mod tests {
         let data = build_verbose_message(&payload);
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "-123");
+        assert_eq!(msg.payload_text(), "-123");
     }
 
     #[test]
@@ -702,10 +845,43 @@ mod tests {
         msg_bytes.push(2); // NOAR = 2
         msg_bytes.extend_from_slice(b"APP1");
         msg_bytes.extend_from_slice(b"CTX1");
-        msg_bytes.extend(payload);
+        msg_bytes.extend_from_slice(&payload);
 
         let (_, msg) = parse_dlt_message(&msg_bytes).expect("Parsing failed");
-        assert_eq!(msg.payload_text, "RPM: 2400");
+        assert!(!msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), payload.as_slice());
+        assert_eq!(msg.payload_text(), "RPM: 2400");
+        assert!(msg.payload_text_is_initialized());
+        assert_eq!(msg.payload_raw(), payload.as_slice());
+    }
+
+    #[test]
+    fn test_clone_and_equality_preserve_lazy_payload_state() {
+        let data = build_spec_compliant_message(b"lazy clone");
+        let (_, original) = parse_dlt_message(&data).expect("Parsing failed");
+        let clone = original.clone();
+
+        assert!(!original.payload_text_is_initialized());
+        assert!(!clone.payload_text_is_initialized());
+        assert_eq!(original, clone);
+        assert!(!original.payload_text_is_initialized());
+        assert!(!clone.payload_text_is_initialized());
+
+        assert_eq!(clone.payload_text(), "lazy clone");
+        assert!(!original.payload_text_is_initialized());
+        assert!(clone.payload_text_is_initialized());
+        assert_eq!(original, clone);
+        assert!(!original.payload_text_is_initialized());
+
+        let initialized_clone = clone.clone();
+        assert!(initialized_clone.payload_text_is_initialized());
+        assert_eq!(initialized_clone.payload_text(), "lazy clone");
+    }
+
+    #[test]
+    fn test_dlt_message_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DltMessage>();
     }
 
     #[test]
@@ -746,11 +922,12 @@ mod tests {
 
         let (remaining, msg) = parse_dlt_message(&msg_bytes).expect("Parsing failed");
         assert_eq!(remaining.len(), 0);
+        assert_eq!(msg.timestamp_us, 1_640_995_200_000_000);
         assert_eq!(msg.ecu_id, "CIVI"); // Should use WEID ECU ID
         assert_eq!(msg.apid, Some("VRBT".to_string()));
         assert_eq!(msg.ctid, Some("BOOT".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
-        assert_eq!(msg.payload_text, "Real IVI log");
+        assert_eq!(msg.payload_text(), "Real IVI log");
     }
 
     #[test]
@@ -771,6 +948,20 @@ mod tests {
         match err {
             ParseError::Incomplete(_) => {}
             _ => panic!("Expected ParseError::Incomplete, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_storage_message_rejects_invalid_standard_header_versions() {
+        for version in [0, 2, 3, 4, 5, 6, 7] {
+            let mut data = build_spec_compliant_message(b"invalid version");
+            data[16] = (data[16] & 0x1f) | (version << 5);
+
+            assert_eq!(
+                parse_dlt_message(&data).unwrap_err(),
+                ParseError::InvalidHeader,
+                "storage-framed VERS={version} must be rejected"
+            );
         }
     }
 
@@ -847,9 +1038,48 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 3);
         assert_eq!(skipped, 0);
-        assert_eq!(msgs[0].payload_text, "Message 1");
-        assert_eq!(msgs[1].payload_text, "Message 2");
-        assert_eq!(msgs[2].payload_text, "Message 3");
+        assert_eq!(msgs[0].payload_text(), "Message 1");
+        assert_eq!(msgs[1].payload_text(), "Message 2");
+        assert_eq!(msgs[2].payload_text(), "Message 3");
+    }
+
+    #[test]
+    fn test_parse_many_messages_materializes_only_requested_payloads() {
+        const COUNT: usize = 4096;
+        let message = build_spec_compliant_message(b"deferred payload");
+        let mut data = Vec::with_capacity(message.len() * COUNT);
+        for _ in 0..COUNT {
+            data.extend_from_slice(&message);
+        }
+
+        let (messages, skipped) = parse_all_messages(&data);
+        assert_eq!(messages.len(), COUNT);
+        assert_eq!(skipped, 0);
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.payload_text_is_initialized())
+        );
+
+        for message in &messages {
+            assert_eq!(message.payload_raw(), b"deferred payload");
+        }
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.payload_text_is_initialized())
+        );
+
+        for index in [0, COUNT / 2, COUNT - 1] {
+            assert_eq!(messages[index].payload_text(), "deferred payload");
+        }
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.payload_text_is_initialized())
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -862,8 +1092,8 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 2);
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "First");
-        assert_eq!(msgs[1].payload_text, "Second");
+        assert_eq!(msgs[0].payload_text(), "First");
+        assert_eq!(msgs[1].payload_text(), "Second");
     }
 
     #[test]
@@ -874,7 +1104,50 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 1);
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "After garbage");
+        assert_eq!(msgs[0].payload_text(), "After garbage");
+    }
+
+    #[test]
+    fn test_parse_all_messages_recovers_after_invalid_storage_magic() {
+        let mut data = b"DLTx".to_vec();
+        data.extend(build_spec_compliant_message(b"After invalid magic"));
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "After invalid magic");
+    }
+
+    #[test]
+    fn test_parse_all_recovers_after_storage_header_with_oversized_length() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"DLT\x01");
+        data.extend_from_slice(&1640995200u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"ECU1");
+        data.extend_from_slice(&[0x21, 0x00, 0xff, 0xff]);
+        let corrupt_len = data.len();
+        data.extend(build_spec_compliant_message(b"Recovered"));
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, corrupt_len);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Recovered");
+    }
+
+    #[test]
+    fn test_parse_all_recovers_raw_message_after_oversized_raw_length() {
+        let mut data = vec![0x21, 0x00, 0xff, 0xff];
+        let raw_message = build_spec_compliant_message(b"Recovered raw");
+        data.extend_from_slice(&raw_message[16..]);
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(skipped, 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Recovered raw");
     }
 
     #[test]
@@ -882,6 +1155,32 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&[]);
         assert_eq!(msgs.len(), 0);
         assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn test_parse_all_counts_incomplete_tail_as_skipped() {
+        let mut data = build_spec_compliant_message(b"Truncated");
+        data.pop();
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert!(messages.is_empty());
+        assert_eq!(skipped, data.len());
+    }
+
+    #[test]
+    fn test_parse_all_preserves_valid_message_before_incomplete_tail() {
+        let complete = build_spec_compliant_message(b"Complete");
+        let mut incomplete = build_spec_compliant_message(b"Incomplete");
+        incomplete.pop();
+        let mut data = complete;
+        data.extend_from_slice(&incomplete);
+
+        let (messages, skipped) = parse_all_messages(&data);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Complete");
+        assert_eq!(skipped, incomplete.len());
     }
 
     #[test]
@@ -906,6 +1205,13 @@ mod tests {
         let payload = build_verbose_uint32_arg(12345);
         let result = decode_verbose_payload(&payload, 1, false);
         assert_eq!(result, "12345");
+    }
+
+    #[test]
+    fn test_decode_verbose_uint32_with_variable_info() {
+        let payload = build_verbose_uint32_arg_with_vari(2400, "engine_speed", "rpm");
+        let result = decode_verbose_payload(&payload, 1, false);
+        assert_eq!(result, "2400");
     }
 
     #[test]
@@ -945,9 +1251,9 @@ mod tests {
         let (msgs, skipped) = parse_all_messages(&data);
         assert_eq!(msgs.len(), 3, "All 3 valid messages should be recovered");
         assert!(skipped > 0);
-        assert_eq!(msgs[0].payload_text, "Boot started");
-        assert_eq!(msgs[1].payload_text, "GPS acquired");
-        assert_eq!(msgs[2].payload_text, "CAN timeout");
+        assert_eq!(msgs[0].payload_text(), "Boot started");
+        assert_eq!(msgs[1].payload_text(), "GPS acquired");
+        assert_eq!(msgs[2].payload_text(), "CAN timeout");
     }
 
     /// Scenario: Verbose message like a real IVI system would produce
@@ -958,11 +1264,11 @@ mod tests {
 
         let (_, msg) = parse_dlt_message(&data).expect("Should parse");
         assert_eq!(
-            msg.payload_text,
+            msg.payload_text(),
             "234:234:cdfw_boot_main.cpp:60:main:Release version."
         );
-        assert!(!msg.payload_text.contains('\0'));
-        assert!(!msg.payload_text.contains('\u{FFFD}')); // no replacement chars
+        assert!(!msg.payload_text().contains('\0'));
+        assert!(!msg.payload_text().contains('\u{FFFD}')); // no replacement chars
     }
 
     // ==================== Bug verification tests ====================
@@ -1006,6 +1312,24 @@ mod tests {
         assert_eq!(pos, 2, "Should find the real standard header at position 2");
     }
 
+    #[test]
+    fn test_find_next_complete_message_skips_incomplete_candidate() {
+        let mut data = vec![0x21, 0x00, 0xff, 0xff];
+        let raw_message = build_spec_compliant_message(b"Complete raw");
+        data.extend_from_slice(&raw_message[16..]);
+
+        assert_eq!(find_next_complete_message(&data), Some(4));
+    }
+
+    #[test]
+    fn test_find_next_complete_message_rejects_partial_candidate() {
+        let storage_message = build_spec_compliant_message(b"Partial");
+        let mut raw_message = storage_message[16..].to_vec();
+        raw_message.pop();
+
+        assert_eq!(find_next_complete_message(&raw_message), None);
+    }
+
     /// FIXED BUG-1: parse_dlt_message now handles messages without storage header
     #[test]
     fn test_parse_without_storage_header() {
@@ -1037,7 +1361,7 @@ mod tests {
         assert_eq!(parsed.apid, Some("APP1".to_string()));
         assert_eq!(parsed.ctid, Some("CTX1".to_string()));
         assert_eq!(parsed.log_level, Some(LogLevel::Info));
-        assert_eq!(parsed.payload_text, "Hello");
+        assert_eq!(parsed.payload_text(), "Hello");
     }
 
     /// FIXED BUG-1b: Messages with WEID can provide ECU ID without storage header
@@ -1063,6 +1387,29 @@ mod tests {
         assert_eq!(remaining.len(), 0);
         assert_eq!(parsed.ecu_id, "TCP1", "ECU ID from WEID");
         assert_eq!(parsed.apid, Some("APP2".to_string()));
-        assert_eq!(parsed.payload_text, "World");
+        assert_eq!(parsed.payload_text(), "World");
+    }
+
+    #[test]
+    fn test_parse_without_storage_header_uses_standard_timestamp() {
+        let mut msg = Vec::new();
+        // HTYP: UEH=1, WTMS=1, VERS=1 => 0x31
+        msg.push(0x31);
+        msg.push(0x00);
+        let total_len: u16 = 4 + 4 + 10 + 5;
+        msg.extend_from_slice(&total_len.to_be_bytes());
+        // Standard-header timestamp is big-endian and measured in 0.1 ms.
+        msg.extend_from_slice(&1_234_567u32.to_be_bytes());
+        msg.push(0x40);
+        msg.push(1);
+        msg.extend_from_slice(b"APP1");
+        msg.extend_from_slice(b"CTX1");
+        msg.extend_from_slice(b"Hello");
+
+        let (remaining, parsed) = parse_dlt_message(&msg).expect("Should parse");
+
+        assert!(remaining.is_empty());
+        assert_eq!(parsed.timestamp_us, 123_456_700);
+        assert_eq!(parsed.payload_text(), "Hello");
     }
 }

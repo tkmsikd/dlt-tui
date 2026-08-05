@@ -7,6 +7,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+const LOG_CHANNEL_CAPACITY: usize = 256;
+const MAX_LOGS_PER_TICK: usize = 1024;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
     Explorer,
@@ -35,12 +38,24 @@ pub enum FilterInputMode {
 #[derive(Debug, PartialEq, Clone)]
 pub struct LogEntry {
     pub message: DltMessage,
-    pub source_file: Option<PathBuf>,
+    pub source_file: Option<Arc<PathBuf>>,
     pub source_index: usize,
 }
 
 impl LogEntry {
     pub fn new(message: DltMessage, source_file: Option<PathBuf>, source_index: usize) -> Self {
+        Self {
+            message,
+            source_file: source_file.map(Arc::new),
+            source_index,
+        }
+    }
+
+    fn new_with_shared_source(
+        message: DltMessage,
+        source_file: Option<Arc<PathBuf>>,
+        source_index: usize,
+    ) -> Self {
         Self {
             message,
             source_file,
@@ -51,7 +66,7 @@ impl LogEntry {
     pub fn source_name(&self) -> &str {
         self.source_file
             .as_deref()
-            .and_then(Path::file_name)
+            .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .unwrap_or("-")
     }
@@ -63,6 +78,8 @@ pub struct App {
     pub explorer_selected_index: usize,
     pub logs: Vec<LogEntry>,
     pub filtered_log_indices: Vec<usize>,
+    source_count_cache: BTreeMap<String, usize>,
+    ctx_count_cache: BTreeMap<String, usize>,
     pub logs_selected_index: usize,
     pub filter: Filter,
     pub filter_input_mode: Option<FilterInputMode>,
@@ -79,6 +96,7 @@ pub struct App {
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
     tcp_error: Option<Arc<Mutex<Option<String>>>>,
+    file_errors: Option<Arc<Mutex<Vec<String>>>>,
     /// BUG-1: Generation counter incremented on every apply_filter() call.
     /// on_tick() only appends new indices if filter_generation hasn't changed.
     filter_generation: u64,
@@ -98,6 +116,8 @@ impl App {
             explorer_selected_index: 0,
             logs: vec![],
             filtered_log_indices: vec![],
+            source_count_cache: BTreeMap::new(),
+            ctx_count_cache: BTreeMap::new(),
             logs_selected_index: 0,
             filter: Filter::default(),
             filter_input_mode: None,
@@ -114,6 +134,7 @@ impl App {
             skipped_bytes: 0,
             skipped_bytes_shared: None,
             tcp_error: None,
+            file_errors: None,
             filter_generation: 0,
         }
     }
@@ -175,42 +196,62 @@ impl App {
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
+        self.error_message = None;
+        self.info_message = None;
+        self.connection_info = None;
+        self.tcp_error = None;
         self.load_filter_config();
         self.is_loading = true;
+        self.auto_scroll = false;
         self.horizontal_scroll = 0;
         self.show_time_delta = false;
         self.skipped_bytes = 0;
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(LOG_CHANNEL_CAPACITY);
         self.log_receiver = Some(rx);
 
         let skipped_shared = Arc::new(AtomicUsize::new(0));
         self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
+        let file_errors = Arc::new(Mutex::new(Vec::new()));
+        self.file_errors = Some(Arc::clone(&file_errors));
+
         std::thread::spawn(move || {
             for (source_index, path) in paths.into_iter().enumerate() {
                 let stream = match crate::fs_reader::open_dlt_stream(&path) {
                     Ok(s) => s,
-                    Err(_) => continue,
+                    Err(e) => {
+                        if let Ok(mut errors) = file_errors.lock() {
+                            errors.push(format!("{}: {}", path.display(), e));
+                        }
+                        continue;
+                    }
                 };
 
-                let source_file = path.clone();
-                let send_result = crate::tcp_client::stream_from_reader_with_handler(
+                let source_file = Arc::new(path.clone());
+                let mut receiver_open = true;
+                let stream_result = crate::tcp_client::stream_from_reader_with_handler(
                     stream,
                     Arc::clone(&skipped_shared),
                     |message| {
-                        tx.send(LogEntry::new(
-                            message,
-                            Some(source_file.clone()),
-                            source_index,
-                        ))
-                        .is_ok()
+                        let sent = tx
+                            .send(LogEntry::new_with_shared_source(
+                                message,
+                                Some(Arc::clone(&source_file)),
+                                source_index,
+                            ))
+                            .is_ok();
+                        receiver_open = sent;
+                        sent
                     },
-                )
-                .is_err();
-
-                if send_result {
-                    continue;
+                );
+                if !receiver_open {
+                    break;
+                }
+                if let Err(e) = stream_result
+                    && let Ok(mut errors) = file_errors.lock()
+                {
+                    errors.push(format!("{}: {}", path.display(), e));
                 }
             }
         });
@@ -248,20 +289,6 @@ impl App {
             }
         }
 
-        if let Some(ref text) = filter.text {
-            if let Some(re) = regex {
-                if !re.is_match(&log.payload_text) {
-                    return false;
-                }
-            } else if !log
-                .payload_text
-                .to_lowercase()
-                .contains(&text.to_lowercase())
-            {
-                return false;
-            }
-        }
-
         if let Some(ref app_id) = filter.app_id {
             let matches = log
                 .apid
@@ -280,6 +307,20 @@ impl App {
                 .map(|s| s.eq_ignore_ascii_case(ctx_id))
                 .unwrap_or(false);
             if !matches {
+                return false;
+            }
+        }
+
+        if let Some(ref text) = filter.text {
+            if let Some(re) = regex {
+                if !re.is_match(log.payload_text()) {
+                    return false;
+                }
+            } else if !log
+                .payload_text()
+                .to_lowercase()
+                .contains(&text.to_lowercase())
+            {
                 return false;
             }
         }
@@ -310,42 +351,100 @@ impl App {
         }
 
         self.sort_filtered_indices();
+        self.rebuild_sidebar_counts();
         self.logs_selected_index = 0;
     }
 
     fn sort_filtered_indices(&mut self) {
-        self.filtered_log_indices.sort_by_key(|&idx| {
-            let entry = &self.logs[idx];
-            (
-                entry.message.timestamp_us == 0,
-                entry.message.timestamp_us,
-                entry.source_index,
-                idx,
-            )
-        });
+        let logs = &self.logs;
+        self.filtered_log_indices
+            .sort_by_key(|&idx| Self::log_sort_key(logs, idx));
     }
 
-    pub fn source_counts(&self) -> Vec<(String, usize)> {
-        let mut counts = BTreeMap::new();
-        for &idx in &self.filtered_log_indices {
-            let source = self.logs[idx].source_name().to_string();
-            *counts.entry(source).or_insert(0) += 1;
+    fn merge_filtered_indices(&mut self, mut incoming: Vec<usize>) {
+        if incoming.is_empty() {
+            return;
         }
-        counts.into_iter().collect()
+
+        let logs = &self.logs;
+        if !incoming
+            .windows(2)
+            .all(|pair| Self::log_sort_key(logs, pair[0]) <= Self::log_sort_key(logs, pair[1]))
+        {
+            incoming.sort_by_key(|&idx| Self::log_sort_key(logs, idx));
+        }
+
+        if self.filtered_log_indices.is_empty()
+            || Self::log_sort_key(logs, *self.filtered_log_indices.last().unwrap())
+                <= Self::log_sort_key(logs, incoming[0])
+        {
+            self.filtered_log_indices.extend(incoming);
+            return;
+        }
+
+        let first_key = Self::log_sort_key(logs, incoming[0]);
+        let split = self
+            .filtered_log_indices
+            .partition_point(|&idx| Self::log_sort_key(logs, idx) < first_key);
+        let tail = self.filtered_log_indices.split_off(split);
+        let mut existing = tail.into_iter().peekable();
+        let mut incoming = incoming.into_iter().peekable();
+        let mut merged = Vec::with_capacity(existing.len() + incoming.len());
+
+        while let (Some(&left), Some(&right)) = (existing.peek(), incoming.peek()) {
+            if Self::log_sort_key(logs, left) <= Self::log_sort_key(logs, right) {
+                merged.push(existing.next().unwrap());
+            } else {
+                merged.push(incoming.next().unwrap());
+            }
+        }
+        merged.extend(existing);
+        merged.extend(incoming);
+        self.filtered_log_indices.extend(merged);
     }
 
-    pub fn ctx_counts(&self) -> Vec<(String, usize)> {
-        let mut counts = BTreeMap::new();
+    fn log_sort_key(logs: &[LogEntry], idx: usize) -> (bool, u64, usize, usize) {
+        let entry = &logs[idx];
+        (
+            entry.message.timestamp_us == 0,
+            entry.message.timestamp_us,
+            entry.source_index,
+            idx,
+        )
+    }
+
+    fn rebuild_sidebar_counts(&mut self) {
+        self.source_count_cache.clear();
+        self.ctx_count_cache.clear();
         for &idx in &self.filtered_log_indices {
-            let ctx = self.logs[idx]
-                .message
-                .ctid
-                .as_deref()
-                .unwrap_or("-")
-                .to_string();
-            *counts.entry(ctx).or_insert(0) += 1;
+            let source = self.logs[idx].source_name();
+            Self::increment_count(&mut self.source_count_cache, source);
+            let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
+            Self::increment_count(&mut self.ctx_count_cache, ctx);
         }
-        counts.into_iter().collect()
+    }
+
+    fn increment_sidebar_counts(&mut self, idx: usize) {
+        let source = self.logs[idx].source_name();
+        Self::increment_count(&mut self.source_count_cache, source);
+        let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
+        Self::increment_count(&mut self.ctx_count_cache, ctx);
+    }
+
+    fn increment_count(counts: &mut BTreeMap<String, usize>, key: &str) {
+        if let Some(count) = counts.get_mut(key) {
+            *count += 1;
+        } else {
+            counts.insert(key.to_string(), 1);
+        }
+    }
+
+    pub fn source_counts(&self) -> &BTreeMap<String, usize> {
+        &self.source_count_cache
+    }
+
+    pub fn ctx_counts(&self) -> &BTreeMap<String, usize> {
+        &self.ctx_count_cache
     }
 
     pub fn selected_entry(&self) -> Option<&LogEntry> {
@@ -394,7 +493,7 @@ impl App {
             let current_len = self.logs.len();
             let current_gen = self.filter_generation;
 
-            loop {
+            for _ in 0..MAX_LOGS_PER_TICK {
                 match rx.try_recv() {
                     Ok(msg) => {
                         self.logs.push(msg);
@@ -414,6 +513,16 @@ impl App {
                                 Some(format!("TCP connection failed: {}", err_msg));
                         }
                         self.tcp_error = None;
+                        if let Some(file_errors) = self.file_errors.take()
+                            && let Ok(errors) = file_errors.lock()
+                            && let Some(first) = errors.first()
+                        {
+                            self.error_message = Some(if errors.len() == 1 {
+                                format!("Failed to load {}", first)
+                            } else {
+                                format!("Failed to load {} files (first: {})", errors.len(), first)
+                            });
+                        }
                         if self.connection_info.is_some() {
                             // If no error was set and no logs received, show a clean disconnect message
                             if self.error_message.is_none() && self.logs.is_empty() {
@@ -446,13 +555,16 @@ impl App {
                 // since we captured current_gen. If it changed, apply_filter()
                 // already rebuilt the full index, so skip incremental append.
                 if self.filter_generation == current_gen {
+                    let mut new_filtered_indices =
+                        Vec::with_capacity(self.logs.len() - current_len);
                     for idx in current_len..self.logs.len() {
                         let log = &self.logs[idx].message;
                         if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
-                            self.filtered_log_indices.push(idx);
+                            new_filtered_indices.push(idx);
+                            self.increment_sidebar_counts(idx);
                         }
                     }
-                    self.sort_filtered_indices();
+                    self.merge_filtered_indices(new_filtered_indices);
                 }
 
                 // Auto-scroll: keep cursor at the end when in tail mode
@@ -551,7 +663,13 @@ impl App {
 
     /// Handle a key event. `page_size` is the number of visible rows (from terminal height).
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, page_size: usize) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+        // Some terminals report a separate release event. It must not repeat
+        // commands, append filter text, or dismiss notifications.
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
 
         // Dismiss error or info on any key press
         if self.error_message.is_some() || self.info_message.is_some() {
@@ -577,8 +695,7 @@ impl App {
                         FilterInputMode::AppId => self.filter.app_id = input,
                         FilterInputMode::CtxId => self.filter.ctx_id = input,
                         FilterInputMode::MinLevel => {
-                            self.filter.min_level = match self.filter_input.to_lowercase().as_str()
-                            {
+                            let level = match self.filter_input.to_lowercase().as_str() {
                                 "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
                                 "e" | "error" => Some(crate::parser::LogLevel::Error),
                                 "w" | "warn" => Some(crate::parser::LogLevel::Warn),
@@ -587,6 +704,12 @@ impl App {
                                 "v" | "verbose" => Some(crate::parser::LogLevel::Verbose),
                                 _ => None,
                             };
+                            if !was_cleared && level.is_none() {
+                                self.error_message =
+                                    Some("Invalid level; use F/E/W/I/D/V".to_string());
+                                return;
+                            }
+                            self.filter.min_level = level;
                         }
                     }
                     self.apply_filter();
@@ -774,15 +897,22 @@ impl App {
     pub fn connect_tcp(&mut self, addr: &str) {
         self.logs.clear();
         self.filtered_log_indices.clear();
+        self.source_count_cache.clear();
+        self.ctx_count_cache.clear();
         self.logs_selected_index = 0;
+        self.error_message = None;
+        self.info_message = None;
+        self.file_errors = None;
         self.load_filter_config();
         self.is_loading = true;
         self.auto_scroll = true;
         self.horizontal_scroll = 0;
         self.show_time_delta = false;
+        self.skipped_bytes = 0;
+        self.skipped_bytes_shared = None;
         self.connection_info = Some(addr.to_string());
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(LOG_CHANNEL_CAPACITY);
         self.log_receiver = Some(rx);
 
         // BUG-5: shared error state so background thread can report connection failures
@@ -888,15 +1018,14 @@ mod tests {
         app.screen = AppScreen::LogViewer;
         for i in 0..count {
             app.logs.push(LogEntry::new(
-                DltMessage {
-                    timestamp_us: 1000 + i as u64,
-                    ecu_id: format!("ECU{}", i),
-                    apid: None,
-                    ctid: None,
-                    log_level: None,
-                    payload_text: format!("Log message {}", i),
-                    payload_raw: format!("Log message {}", i).into_bytes(),
-                },
+                DltMessage::new(
+                    1000 + i as u64,
+                    format!("ECU{}", i),
+                    None,
+                    None,
+                    None,
+                    format!("Log message {}", i).into_bytes(),
+                ),
                 None,
                 0,
             ));
@@ -912,15 +1041,14 @@ mod tests {
         source_index: usize,
     ) -> LogEntry {
         LogEntry::new(
-            DltMessage {
+            DltMessage::new(
                 timestamp_us,
-                ecu_id: "ECU1".to_string(),
-                apid: Some("APP1".to_string()),
-                ctid: Some("CTX1".to_string()),
-                log_level: Some(crate::parser::LogLevel::Info),
-                payload_text: payload_text.to_string(),
-                payload_raw: payload_text.as_bytes().to_vec(),
-            },
+                "ECU1".to_string(),
+                Some("APP1".to_string()),
+                Some("CTX1".to_string()),
+                Some(crate::parser::LogLevel::Info),
+                payload_text.as_bytes().to_vec(),
+            ),
             source_file.map(PathBuf::from),
             source_index,
         )
@@ -1008,9 +1136,59 @@ mod tests {
         let ordered_payloads: Vec<&str> = app
             .filtered_log_indices
             .iter()
-            .map(|&idx| app.logs[idx].message.payload_text.as_str())
+            .map(|&idx| app.logs[idx].message.payload_text())
             .collect();
         assert_eq!(ordered_payloads, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn test_merge_filtered_indices_interleaves_sorted_batches() {
+        let mut app = App::new();
+        app.logs.push(mock_entry(100, "first", None, 0));
+        app.logs.push(mock_entry(300, "third", None, 0));
+        app.logs.push(mock_entry(400, "fourth", None, 0));
+        app.logs.push(mock_entry(200, "second", None, 0));
+        app.filtered_log_indices = vec![0, 1];
+
+        app.merge_filtered_indices(vec![2, 3]);
+
+        assert_eq!(app.filtered_log_indices, vec![0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn test_merge_filtered_indices_matches_full_sort() {
+        let mut app = App::new();
+        for i in 0..500 {
+            app.logs.push(mock_entry(
+                ((i * 73) % 499 + 1) as u64,
+                &format!("message {i}"),
+                None,
+                i % 3,
+            ));
+        }
+
+        app.filtered_log_indices = (0..300).collect();
+        app.sort_filtered_indices();
+        let incoming: Vec<usize> = (300..500).rev().collect();
+        let mut expected: Vec<usize> = (0..500).collect();
+        expected.sort_by_key(|&idx| App::log_sort_key(&app.logs, idx));
+
+        app.merge_filtered_indices(incoming);
+
+        assert_eq!(app.filtered_log_indices, expected);
+    }
+
+    #[test]
+    fn test_merge_filtered_indices_keeps_zero_timestamp_last() {
+        let mut app = App::new();
+        app.logs.push(mock_entry(100, "source one", None, 1));
+        app.logs.push(mock_entry(100, "source zero", None, 0));
+        app.logs.push(mock_entry(0, "unknown time", None, 0));
+        app.filtered_log_indices = vec![0];
+
+        app.merge_filtered_indices(vec![2, 1]);
+
+        assert_eq!(app.filtered_log_indices, vec![1, 0, 2]);
     }
 
     #[test]
@@ -1018,6 +1196,26 @@ mod tests {
         let entry = mock_entry(1_000, "payload", Some("/tmp/logs/ctx_a.dlt"), 0);
 
         assert_eq!(entry.source_name(), "ctx_a.dlt");
+    }
+
+    #[test]
+    fn test_log_entries_share_source_path_allocation() {
+        let source = Arc::new(PathBuf::from("/tmp/logs/shared.dlt"));
+        let first = LogEntry::new_with_shared_source(
+            mock_entry(1_000, "first", None, 0).message,
+            Some(Arc::clone(&source)),
+            0,
+        );
+        let second = LogEntry::new_with_shared_source(
+            mock_entry(2_000, "second", None, 0).message,
+            Some(Arc::clone(&source)),
+            0,
+        );
+
+        assert!(Arc::ptr_eq(
+            first.source_file.as_ref().unwrap(),
+            second.source_file.as_ref().unwrap()
+        ));
     }
 
     #[test]
@@ -1034,8 +1232,17 @@ mod tests {
 
         app.apply_filter();
 
-        assert_eq!(app.source_counts(), vec![("ctx_a.dlt".to_string(), 2)]);
-        assert_eq!(app.ctx_counts(), vec![("CTX1".to_string(), 2)]);
+        assert_eq!(app.source_counts().len(), 1);
+        assert_eq!(app.source_counts().get("ctx_a.dlt"), Some(&2));
+        assert_eq!(app.ctx_counts().len(), 1);
+        assert_eq!(app.ctx_counts().get("CTX1"), Some(&2));
+
+        app.filter.text = Some("drop".to_string());
+        app.apply_filter();
+
+        assert_eq!(app.source_counts().len(), 1);
+        assert_eq!(app.source_counts().get("ctx_b.dlt"), Some(&1));
+        assert_eq!(app.ctx_counts().get("CTX1"), Some(&1));
     }
 
     // ==================== Page scrolling tests ====================
@@ -1207,15 +1414,14 @@ mod tests {
 
         for (i, (ecu, apid, ctid, level, text)) in entries.into_iter().enumerate() {
             app.logs.push(LogEntry::new(
-                DltMessage {
-                    timestamp_us: 1000 + i as u64,
-                    ecu_id: ecu.to_string(),
-                    apid: apid.map(|s| s.to_string()),
-                    ctid: ctid.map(|s| s.to_string()),
-                    log_level: level,
-                    payload_text: text.to_string(),
-                    payload_raw: text.as_bytes().to_vec(),
-                },
+                DltMessage::new(
+                    1000 + i as u64,
+                    ecu.to_string(),
+                    apid.map(|s| s.to_string()),
+                    ctid.map(|s| s.to_string()),
+                    level,
+                    text.as_bytes().to_vec(),
+                ),
                 None,
                 0,
             ));
@@ -1272,6 +1478,45 @@ mod tests {
     }
 
     #[test]
+    fn test_metadata_filters_do_not_materialize_payload_text() {
+        let mut app = build_mock_app_with_diverse_logs();
+        assert!(
+            app.logs
+                .iter()
+                .all(|entry| !entry.message.payload_text_is_initialized())
+        );
+
+        app.filter.app_id = Some("DIAG".to_string());
+        app.filter.ctx_id = Some("CAN1".to_string());
+        app.filter.min_level = Some(crate::parser::LogLevel::Error);
+        app.apply_filter();
+
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert!(
+            app.logs
+                .iter()
+                .all(|entry| !entry.message.payload_text_is_initialized())
+        );
+    }
+
+    #[test]
+    fn test_metadata_filters_run_before_text_materialization() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.filter.app_id = Some("HMI".to_string());
+        app.filter.text = Some("Frame".to_string());
+        app.apply_filter();
+
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert_eq!(
+            app.logs
+                .iter()
+                .filter(|entry| entry.message.payload_text_is_initialized())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn test_filter_compound_level_and_app() {
         let mut app = build_mock_app_with_diverse_logs();
 
@@ -1293,7 +1538,7 @@ mod tests {
         app.apply_filter();
         assert_eq!(app.filtered_log_indices.len(), 1); // Only "CAN bus timeout"
         assert_eq!(
-            app.logs[app.filtered_log_indices[0]].message.payload_text,
+            app.logs[app.filtered_log_indices[0]].message.payload_text(),
             "CAN bus timeout on channel 1"
         );
     }
@@ -1363,12 +1608,34 @@ mod tests {
     // ==================== Bug verification tests ====================
 
     fn make_key(code: KeyCode) -> KeyEvent {
+        make_key_with_kind(code, crossterm::event::KeyEventKind::Press)
+    }
+
+    fn make_key_with_kind(code: KeyCode, kind: crossterm::event::KeyEventKind) -> KeyEvent {
         KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
-            kind: crossterm::event::KeyEventKind::Press,
+            kind,
             state: crossterm::event::KeyEventState::NONE,
         }
+    }
+
+    #[test]
+    fn test_key_release_is_ignored_but_repeat_is_processed() {
+        use crossterm::event::KeyEventKind;
+
+        let mut app = build_mock_app_with_logs(3);
+        app.info_message = Some("still visible".to_string());
+        app.handle_key(make_key_with_kind(KeyCode::Down, KeyEventKind::Release), 20);
+
+        assert_eq!(app.logs_selected_index, 0);
+        assert_eq!(app.info_message.as_deref(), Some("still visible"));
+
+        app.info_message = None;
+        app.handle_key(make_key_with_kind(KeyCode::Down, KeyEventKind::Repeat), 20);
+        assert_eq!(app.logs_selected_index, 1);
+        app.handle_key(make_key(KeyCode::Down), 20);
+        assert_eq!(app.logs_selected_index, 2);
     }
 
     /// FIXED: `Ctrl+b` in the Explorer must page up, not trigger batch load
@@ -1521,6 +1788,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_invalid_level_preserves_active_filter() {
+        let mut app = build_mock_app_with_diverse_logs();
+        app.filter.min_level = Some(crate::parser::LogLevel::Warn);
+        app.apply_filter();
+        let filtered_before = app.filtered_log_indices.clone();
+        let generation_before = app.filter_generation;
+        app.logs_selected_index = 1;
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        app.handle_key(make_key(KeyCode::Char('x')), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, Some(crate::parser::LogLevel::Warn));
+        assert_eq!(app.filtered_log_indices, filtered_before);
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(app.filter_generation, generation_before);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Invalid level; use F/E/W/I/D/V")
+        );
+        assert_eq!(app.info_message, None);
+        assert_eq!(app.filter_input_mode, None);
+    }
+
+    #[test]
+    fn test_level_filter_accepts_names_and_empty_clears() {
+        let mut app = build_mock_app_with_diverse_logs();
+        let generation_before = app.filter_generation;
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        for character in "ERROR".chars() {
+            app.handle_key(make_key(KeyCode::Char(character)), 20);
+        }
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, Some(crate::parser::LogLevel::Error));
+        assert_eq!(app.filter_generation, generation_before + 1);
+        assert_eq!(app.error_message, None);
+
+        app.handle_key(make_key(KeyCode::Char('l')), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filter.min_level, None);
+        assert_eq!(app.filter_generation, generation_before + 2);
+        assert_eq!(app.filtered_log_indices.len(), app.logs.len());
+        assert_eq!(app.info_message.as_deref(), Some("Filter cleared"));
+    }
+
     /// BUG-2: Accessing explorer with out-of-bounds index should not panic
     #[test]
     fn test_explorer_bounds_safety() {
@@ -1567,5 +1883,109 @@ mod tests {
             gen_before + 1,
             "apply_filter should increment filter_generation"
         );
+    }
+
+    #[test]
+    fn test_on_tick_limits_messages_processed_per_frame() {
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let total = MAX_LOGS_PER_TICK + 5;
+
+        for i in 0..total {
+            let text = format!("message {i}");
+            tx.send(LogEntry::new(
+                DltMessage::new(
+                    i as u64,
+                    "ECU1".to_string(),
+                    None,
+                    None,
+                    None,
+                    text.into_bytes(),
+                ),
+                None,
+                0,
+            ))
+            .unwrap();
+        }
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.is_loading = true;
+        app.auto_scroll = true;
+
+        app.on_tick();
+
+        assert_eq!(app.logs.len(), MAX_LOGS_PER_TICK);
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
+        assert_eq!(app.source_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
+        assert_eq!(app.ctx_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK - 1);
+        assert!(app.log_receiver.is_some());
+        assert!(app.is_loading);
+
+        app.on_tick();
+
+        assert_eq!(app.logs.len(), total);
+        assert_eq!(app.filtered_log_indices.len(), total);
+        assert_eq!(app.source_counts().get("-"), Some(&total));
+        assert_eq!(app.ctx_counts().get("-"), Some(&total));
+        assert_eq!(app.logs_selected_index, total - 1);
+        assert!(app.log_receiver.is_none());
+        assert!(!app.is_loading);
+    }
+
+    #[test]
+    fn test_file_load_errors_are_reported_when_loading_finishes() {
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.is_loading = true;
+        app.file_errors = Some(Arc::new(Mutex::new(vec![
+            "broken.dlt.gz: invalid gzip header".to_string(),
+        ])));
+
+        app.on_tick();
+
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Failed to load broken.dlt.gz: invalid gzip header")
+        );
+        assert!(app.file_errors.is_none());
+        assert!(!app.is_loading);
+    }
+
+    #[test]
+    fn test_missing_file_error_reaches_the_ui() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_path = temp_dir.path().join("missing.dlt");
+        let mut app = App::new();
+
+        app.load_files(vec![missing_path]).unwrap();
+        for _ in 0..100 {
+            app.on_tick();
+            if !app.is_loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert!(!app.is_loading);
+        let error = app.error_message.as_deref().unwrap_or_default();
+        assert!(error.starts_with("Failed to load "));
+        assert!(error.contains("missing.dlt"));
+    }
+
+    #[test]
+    fn test_file_load_resets_tcp_state() {
+        let mut app = App::new();
+        app.connection_info = Some("localhost:3490".to_string());
+        app.auto_scroll = true;
+        app.tcp_error = Some(Arc::new(Mutex::new(Some("old error".to_string()))));
+
+        app.load_files(Vec::new()).unwrap();
+
+        assert!(app.connection_info.is_none());
+        assert!(!app.auto_scroll);
+        assert!(app.tcp_error.is_none());
     }
 }
