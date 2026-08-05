@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pull requests now run cross-platform use-case scenarios, verify the crates.io package on Linux, cancel superseded CI runs, and time out stalled jobs after 15 minutes.
 - ZIP captures are now decompressed through a small bounded buffer instead of being expanded entirely in memory before parsing, so large archives begin displaying sooner and use substantially less peak memory.
 - Tagged releases must come from `master`, pass a current RustSec audit, and remain drafts until all six locked platform builds are uploaded and verified, preventing incomplete releases from being published.
 - RustSec's patched `anyhow` and `rand` releases replace stale lockfile entries, and dependency-audit warnings now fail CI instead of being silently allowed.

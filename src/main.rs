@@ -21,6 +21,9 @@ pub mod parser;
 pub mod tcp_client;
 pub mod ui;
 
+#[cfg(test)]
+mod use_case_tests;
+
 #[derive(Debug, PartialEq)]
 struct CliOptions {
     connect_addr: Option<String>,
