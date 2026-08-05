@@ -101,21 +101,24 @@ where
         .unwrap_or(0);
 
     loop {
-        let reached_eof = match reader.read(&mut read_buf) {
-            Ok(0) => true,
+        let (reached_eof, terminal_error) = match reader.read(&mut read_buf) {
+            Ok(0) => (true, None),
             Ok(n) => {
                 buffer.extend_from_slice(&read_buf[..n]);
-                false
+                (false, None)
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // Read timeout — no data available yet, try parsing what we have
-                false
+                (false, None)
             }
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {
                 // Same as WouldBlock on some platforms
-                false
+                (false, None)
             }
-            Err(e) => return Err(e),
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            // No more bytes can arrive after a terminal read error. Parse and
+            // account for everything already buffered before returning it.
+            Err(error) => (true, Some(error)),
         };
 
         // Try to parse as many messages as possible from the buffer
@@ -191,6 +194,9 @@ where
                 if let Some(skipped_bytes) = &skipped_bytes {
                     skipped_bytes.store(total_skipped, Ordering::Relaxed);
                 }
+            }
+            if let Some(error) = terminal_error {
+                return Err(error);
             }
             break;
         }
@@ -608,6 +614,29 @@ mod tests {
                 "cut at byte {cut}"
             );
         }
+    }
+
+    #[test]
+    fn test_terminal_read_error_salvages_buffered_raw_message() {
+        let mut data = vec![0x21, 0x00, 0xFF, 0xFF];
+        data.extend(build_dlt_message_without_storage_header(b"Before error"));
+        let reader = ScriptedReader {
+            steps: VecDeque::from([
+                Ok(data),
+                Err(io::Error::new(io::ErrorKind::InvalidData, "damaged zip")),
+            ]),
+        };
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        let error =
+            stream_from_reader_with_skipped(reader, tx, Arc::clone(&skipped_bytes)).unwrap_err();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_text(), "Before error");
     }
 
     #[test]

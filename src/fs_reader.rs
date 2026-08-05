@@ -2,9 +2,11 @@ use std::{
     fs::File,
     io::{Cursor, Error, ErrorKind, Read, Result},
     path::Path,
+    sync::mpsc::{Receiver, SyncSender, sync_channel},
 };
 
 const MAX_LOAD_SIZE: u64 = 500 * 1024 * 1024; // 500MB max per file
+const ZIP_CHUNK_SIZE: usize = 64 * 1024;
 
 pub fn open_dlt_stream<P: AsRef<Path>>(path: P) -> Result<Box<dyn Read>> {
     open_dlt_stream_with_limit(path.as_ref(), MAX_LOAD_SIZE)
@@ -43,20 +45,106 @@ fn open_dlt_stream_with_limit(path_ref: &Path, limit: u64) -> Result<Box<dyn Rea
                     "Zip archive contains no file entries",
                 )
             })?;
-            let zipped_file = archive.by_index(selected_index)?;
-            if zipped_file.size() > limit {
+            if archive.by_index(selected_index)?.size() > limit {
                 return Err(size_limit_error(limit));
             }
 
-            let mut buffer = Vec::new();
-            SizeLimitedReader::new(zipped_file, limit).read_to_end(&mut buffer)?;
-            Ok(Box::new(Cursor::new(buffer)))
+            let (sender, receiver) = sync_channel(2);
+            std::thread::spawn(move || {
+                let event = match stream_zip_entry(archive, selected_index, limit, &sender) {
+                    Ok(()) => ZipEvent::End,
+                    Err(error) => ZipEvent::Error(error),
+                };
+                let _ = sender.send(event);
+            });
+            Ok(Box::new(ChannelReader::new(receiver)))
         }
         _ => {
             if file.metadata()?.len() > limit {
                 return Err(size_limit_error(limit));
             }
             Ok(Box::new(SizeLimitedReader::new(file, limit)))
+        }
+    }
+}
+
+enum ZipEvent {
+    Data(Vec<u8>),
+    End,
+    Error(Error),
+}
+
+fn stream_zip_entry(
+    mut archive: zip::ZipArchive<File>,
+    selected_index: usize,
+    limit: u64,
+    sender: &SyncSender<ZipEvent>,
+) -> Result<()> {
+    let zipped_file = archive.by_index(selected_index)?;
+    let mut reader = SizeLimitedReader::new(zipped_file, limit);
+    loop {
+        let mut chunk = vec![0; ZIP_CHUNK_SIZE];
+        let read = match reader.read(&mut chunk) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if read == 0 {
+            return Ok(());
+        }
+        chunk.truncate(read);
+        if sender.send(ZipEvent::Data(chunk)).is_err() {
+            return Ok(());
+        }
+    }
+}
+
+struct ChannelReader {
+    receiver: Receiver<ZipEvent>,
+    current: Cursor<Vec<u8>>,
+    finished: bool,
+}
+
+impl ChannelReader {
+    fn new(receiver: Receiver<ZipEvent>) -> Self {
+        Self {
+            receiver,
+            current: Cursor::new(Vec::new()),
+            finished: false,
+        }
+    }
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if buf.is_empty() || self.finished {
+            return Ok(0);
+        }
+
+        loop {
+            if self.current.position() < self.current.get_ref().len() as u64 {
+                return self.current.read(buf);
+            }
+
+            match self.receiver.recv() {
+                Ok(ZipEvent::Data(chunk)) => {
+                    self.current = Cursor::new(chunk);
+                }
+                Ok(ZipEvent::End) => {
+                    self.finished = true;
+                    return Ok(0);
+                }
+                Ok(ZipEvent::Error(error)) => {
+                    self.finished = true;
+                    return Err(error);
+                }
+                Err(_) => {
+                    self.finished = true;
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "ZIP decompression ended without a completion event",
+                    ));
+                }
+            }
         }
     }
 }
@@ -217,6 +305,33 @@ mod tests {
         let mut buffer = Vec::new();
         stream.read_to_end(&mut buffer).unwrap();
         assert_eq!(buffer, dummy_data);
+    }
+
+    #[test]
+    fn test_zip_streams_large_entry_across_small_reads() {
+        let tmp_dir = tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("streamed.zip");
+        let expected = b"DLT_STREAM_CHUNK".repeat((ZIP_CHUNK_SIZE * 3) / 16 + 1);
+
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("trace.dlt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&expected).unwrap();
+        zip.finish().unwrap();
+
+        let mut stream = open_dlt_stream(&zip_path).unwrap();
+        let mut actual = Vec::new();
+        let mut small_buffer = [0; 17];
+        loop {
+            let read = stream.read(&mut small_buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            actual.extend_from_slice(&small_buffer[..read]);
+        }
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
