@@ -21,18 +21,21 @@ Steps to cut a new dlt-tui release.
    ```
 
    Review the package list for local files, secrets, and generated artifacts.
-4. Commit both changes:
+4. Commit the release changes on a branch and merge them through a pull request:
 
    ```bash
-   git add Cargo.toml CHANGELOG.md
-   git commit -m "release: vX.Y.Z"
+   git switch -c codex/release-vX.Y.Z
+   git add Cargo.toml Cargo.lock CHANGELOG.md
+   git commit -m "[RELEASE] Prepare vX.Y.Z"
+   git push -u origin codex/release-vX.Y.Z
    ```
 
 ## 2. Tag and push
 
 ```bash
+git switch master
+git pull --ff-only origin master
 git tag vX.Y.Z
-git push origin master
 git push origin vX.Y.Z
 ```
 

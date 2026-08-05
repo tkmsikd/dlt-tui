@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-05
+
 ### Fixed
 
 - Corrupt raw headers no longer cause later complete raw DLT messages to be discarded at end of input, and incomplete tails are now counted consistently as skipped bytes.
@@ -176,6 +178,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security hardening** — Zip bomb protection (500MB limit), terminal injection sanitization
 - **CLI argument support** — pass a directory or file path to open directly
 
+[Unreleased]: https://github.com/tkmsikd/dlt-tui/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/tkmsikd/dlt-tui/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/tkmsikd/dlt-tui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.4.1...v1.0.0
 [0.3.4]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tkmsikd/dlt-tui/compare/v0.3.2...v0.3.3
