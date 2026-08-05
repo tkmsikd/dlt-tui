@@ -420,9 +420,10 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .unwrap_or("-");
 
     let source_capacity = sidebar_chunks[0].height.saturating_sub(2) as usize;
-    let source_items = app
-        .source_counts()
-        .iter()
+    let mut source_counts: Vec<_> = app.source_counts().iter().collect();
+    source_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let source_items = source_counts
+        .into_iter()
         .take(source_capacity)
         .map(|(source, count)| {
             let marker = if Some(source.as_str()) == selected_source {
@@ -434,9 +435,10 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         });
 
     let ctx_capacity = sidebar_chunks[1].height.saturating_sub(2) as usize;
-    let ctx_items = app
-        .ctx_counts()
-        .iter()
+    let mut ctx_counts: Vec<_> = app.ctx_counts().iter().collect();
+    ctx_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let ctx_items = ctx_counts
+        .into_iter()
         .take(ctx_capacity)
         .map(|(ctx, count)| {
             let marker = if ctx == selected_ctx { ">" } else { " " };
@@ -544,6 +546,49 @@ mod tests {
         assert!(text.contains("DIAG"), "Should show APP ID");
         assert!(text.contains("CAN bus timeout"), "Should show payload text");
         assert!(text.contains("Logs: 1/1"), "Should show log count");
+    }
+
+    #[test]
+    fn test_sidebar_prioritizes_most_frequent_entries() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..10 {
+            app.logs.push(LogEntry::new(
+                DltMessage::new(
+                    i,
+                    "ECU1".to_string(),
+                    None,
+                    Some(format!("C{i:03}")),
+                    None,
+                    b"low frequency".to_vec(),
+                ),
+                Some(PathBuf::from(format!("source-{i:03}.dlt"))),
+                i as usize,
+            ));
+        }
+        for i in 0..2 {
+            app.logs.push(LogEntry::new(
+                DltMessage::new(
+                    10 + i,
+                    "ECU1".to_string(),
+                    None,
+                    Some("ZBUS".to_string()),
+                    None,
+                    b"high frequency".to_vec(),
+                ),
+                Some(PathBuf::from("z-busy.dlt")),
+                10,
+            ));
+        }
+        app.apply_filter();
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = buffer_to_string(&terminal);
+
+        assert!(text.contains("    2 z-busy.dlt"));
+        assert!(text.contains("    2 ZBUS"));
     }
 
     #[test]

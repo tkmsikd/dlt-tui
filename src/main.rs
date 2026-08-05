@@ -8,6 +8,7 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     io,
+    net::SocketAddr,
     path::PathBuf,
 };
 
@@ -156,11 +157,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = OsString>) -> Result<CliCommand
                     "--connect requires an address (for example, localhost:3490)".to_string(),
                 );
             }
-            connect_addr = Some(
-                address
-                    .into_string()
-                    .map_err(|_| "--connect address must be valid UTF-8".to_string())?,
-            );
+            let address = address
+                .into_string()
+                .map_err(|_| "--connect address must be valid UTF-8".to_string())?;
+            if !valid_connect_address(&address) {
+                return Err(
+                    "--connect requires HOST:PORT (for example, localhost:3490)".to_string()
+                );
+            }
+            connect_addr = Some(address);
         } else if arg == OsStr::new("--help") || arg == OsStr::new("-h") {
             return Ok(CliCommand::Help);
         } else if arg == OsStr::new("--version") || arg == OsStr::new("-V") {
@@ -180,6 +185,31 @@ fn parse_cli_args(args: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         connect_addr,
         file_paths,
     }))
+}
+
+fn valid_connect_address(address: &str) -> bool {
+    if address.parse::<SocketAddr>().is_ok() {
+        return true;
+    }
+
+    address
+        .rsplit_once(':')
+        .is_some_and(|(host, port)| valid_hostname(host) && port.parse::<u16>().is_ok())
+}
+
+fn valid_hostname(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        })
 }
 
 fn print_help() {
@@ -267,6 +297,13 @@ mod tests {
                 file_paths: Vec::new(),
             }))
         );
+        assert_eq!(
+            parse(&["--connect", "[::1]:3490"]),
+            Ok(CliCommand::Run(CliOptions {
+                connect_addr: Some("[::1]:3490".to_string()),
+                file_paths: Vec::new(),
+            }))
+        );
     }
 
     #[test]
@@ -281,6 +318,20 @@ mod tests {
                 .unwrap_err()
                 .contains("requires an address")
         );
+        for address in [
+            "",
+            "localhost",
+            "localhost:not-a-port",
+            ":3490",
+            "foo bar:3490",
+            "/tmp/socket:3490",
+        ] {
+            assert!(
+                parse(&["-c", address])
+                    .unwrap_err()
+                    .contains("requires HOST:PORT")
+            );
+        }
     }
 
     #[test]
