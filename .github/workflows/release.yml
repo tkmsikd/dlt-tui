@@ -70,7 +70,7 @@ jobs:
         run: cargo audit --deny warnings
 
       - name: Install Rust 1.88.0
-        uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
 
       - name: Check MSRV
         run: cargo +1.88.0 check --all-targets --locked
