@@ -61,7 +61,7 @@ jobs:
         run: cargo package --locked
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2
         with:
           tool: cargo-audit@0.22.2
           fallback: none
