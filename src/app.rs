@@ -909,11 +909,13 @@ impl App {
         self.horizontal_scroll = 0;
         self.show_time_delta = false;
         self.skipped_bytes = 0;
-        self.skipped_bytes_shared = None;
         self.connection_info = Some(addr.to_string());
 
         let (tx, rx) = std::sync::mpsc::sync_channel(LOG_CHANNEL_CAPACITY);
         self.log_receiver = Some(rx);
+
+        let skipped_shared = Arc::new(AtomicUsize::new(0));
+        self.skipped_bytes_shared = Some(Arc::clone(&skipped_shared));
 
         // BUG-5: shared error state so background thread can report connection failures
         let tcp_error = Arc::new(Mutex::new(None));
@@ -921,11 +923,11 @@ impl App {
 
         let addr_owned = addr.to_string();
         std::thread::spawn(move || {
-            if let Err(e) =
-                crate::tcp_client::stream_from_tcp_with_handler(&addr_owned, |message| {
-                    tx.send(LogEntry::new(message, None, 0)).is_ok()
-                })
-                && let Ok(mut guard) = tcp_error.lock()
+            if let Err(e) = crate::tcp_client::stream_from_tcp_with_handler(
+                &addr_owned,
+                skipped_shared,
+                |message| tx.send(LogEntry::new(message, None, 0)).is_ok(),
+            ) && let Ok(mut guard) = tcp_error.lock()
             {
                 *guard = Some(e.to_string());
             }

@@ -183,3 +183,27 @@ fn live_tcp_receives_fragmented_messages_and_disconnects_cleanly() {
     assert!(app.error_message.is_none());
     assert_eq!(app.skipped_bytes, 0);
 }
+
+#[test]
+fn live_tcp_reports_recovered_bytes() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let message = raw_message(10, 0, b"after garbage");
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"bad!").unwrap();
+        stream.write_all(&message).unwrap();
+    });
+
+    let mut app = App::new();
+    app.connect_tcp(&address.to_string());
+    reset_external_config(&mut app);
+    wait_for_load(&mut app);
+    server.join().unwrap();
+
+    assert_eq!(app.logs.len(), 1);
+    assert_eq!(app.logs[0].message.payload_text(), "after garbage");
+    assert_eq!(app.skipped_bytes, 4);
+    assert!(app.error_message.is_none());
+}

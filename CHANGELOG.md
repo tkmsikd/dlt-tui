@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated the locked Ratatui core dependency to use patched `lru`, passing RustSec audit without advisory exceptions.
+- Terminal event-loop I/O errors now produce a failing exit status after terminal cleanup.
+- Exports atomically refuse existing destinations, preventing a concurrent file creation from causing data loss.
+- Live TCP recovery now reports skipped bytes in the viewer, consistent with file loading.
+
+### Changed
+
+- Security audit jobs time out after 15 minutes.
+- Clarified implemented features, future requirements, input-size limits, and reproducible contributor checks.
+
 ## [1.2.0] - 2026-08-05
 
 ### Fixed

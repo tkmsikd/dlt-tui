@@ -16,17 +16,23 @@ const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB — prevents OOM from u
 /// The connection runs on the calling thread (intended to be spawned in a background thread).
 /// Each resolved endpoint times out after 5 seconds if it is unreachable.
 pub fn stream_from_tcp(addr: &str, tx: Sender<DltMessage>) -> io::Result<()> {
-    stream_from_tcp_with_handler(addr, |msg| tx.send(msg).is_ok())
+    stream_from_tcp_with_handler(addr, Arc::new(AtomicUsize::new(0)), |msg| {
+        tx.send(msg).is_ok()
+    })
 }
 
 /// Connects to a dlt-daemon TCP socket and streams parsed messages to a handler.
-pub fn stream_from_tcp_with_handler<F>(addr: &str, on_message: F) -> io::Result<()>
+pub fn stream_from_tcp_with_handler<F>(
+    addr: &str,
+    skipped_bytes: Arc<AtomicUsize>,
+    on_message: F,
+) -> io::Result<()>
 where
     F: FnMut(DltMessage) -> bool,
 {
     let stream = connect_with_timeout(addr, CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-    stream_from_reader_inner(stream, None, on_message)
+    stream_from_reader_inner(stream, Some(skipped_bytes), on_message)
 }
 
 fn connect_with_timeout<A: ToSocketAddrs>(addr: A, timeout: Duration) -> io::Result<TcpStream> {

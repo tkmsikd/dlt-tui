@@ -29,13 +29,16 @@ Feature requests are welcome! Please check the [Planned work](README.md#planned)
 
 ```bash
 # Run tests
-cargo test --all-targets
+cargo test --all-targets --locked
 
 # Run clippy
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
 
 # Check formatting
 cargo fmt --check
+
+# Verify the crates.io package contents
+cargo package --locked
 ```
 
 5. **Open a PR** with a clear description of what you changed and why

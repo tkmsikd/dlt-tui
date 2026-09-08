@@ -123,9 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
     cleanup.disarm();
 
-    if let Err(err) = res {
-        println!("{:?}", err)
-    }
+    res?;
 
     Ok(())
 }
