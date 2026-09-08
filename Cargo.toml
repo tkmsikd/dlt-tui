@@ -13,6 +13,7 @@ keywords = ["dlt", "tui", "automotive", "log-viewer", "diagnostics"]
 categories = ["command-line-utilities", "visualization"]
 exclude = [
     "sample.dlt",
+    "progress.md",
     ".claude/",
     "assets/",
     "docs/",

@@ -1,11 +1,11 @@
 use crate::parser::DltMessage;
 use crate::ui::format_timestamp;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 
 /// Exports a slice of DltMessage references to a text file.
 pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
-    let mut file = File::create(path)?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
 
     // Write a simple header
     writeln!(file, "Timestamp, ECU, APP, CTX, Level, Payload")?;
@@ -40,8 +40,8 @@ pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
-    use tempfile::NamedTempFile;
+    use std::{fs, io::Read};
+    use tempfile::tempdir;
 
     #[test]
     fn test_export_to_txt() {
@@ -54,20 +54,33 @@ mod tests {
             b"test export message".to_vec(),
         );
 
-        let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path().to_str().unwrap();
+        let temp_dir = tempdir().unwrap();
+        let export_path = temp_dir.path().join("export.txt");
+        let path = export_path.to_str().unwrap();
 
         let logs = vec![&msg];
         assert!(!msg.payload_text_is_initialized());
         export_to_txt(&logs, path).unwrap();
         assert!(msg.payload_text_is_initialized());
 
-        let mut file = File::open(path).unwrap();
+        let mut file = std::fs::File::open(path).unwrap();
         let mut content = String::new();
         file.read_to_string(&mut content).unwrap();
 
         assert!(content.contains("Timestamp, ECU, APP, CTX, Level, Payload"));
         assert!(content.contains("[ECU1] [APP1] [CTX1] [INF] test export message"));
         assert!(content.contains("00:20:34.567890")); // format_timestamp result
+    }
+
+    #[test]
+    fn test_export_does_not_overwrite_existing_file() {
+        let temp_dir = tempdir().unwrap();
+        let export_path = temp_dir.path().join("existing.txt");
+        fs::write(&export_path, "keep me").unwrap();
+
+        let error = export_to_txt(&[], export_path.to_str().unwrap()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(export_path).unwrap(), "keep me");
     }
 }

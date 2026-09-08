@@ -60,7 +60,7 @@ adb forward tcp:3490 tcp:3490
 dlt-tui --connect localhost:3490
 ```
 
-A typical triage session: press `l` `W` `Enter` to hide everything below warnings, `a` `DIAG` `Enter` to narrow to one application, then `/` with a regex to find the message you're after, and `Enter` on it for the hex dump. `C` clears all filters. `S` saves the current filter stack to `.dlt-tui.toml` so you can reload it with `L` next time.
+A typical triage session: press `l` `W` `Enter` to hide everything below warnings, `a` `DIAG` `Enter` to narrow to one application, then `/` with a regex to find the message you're after, and `Enter` on it for the hex dump. `C` clears all filters. `S` saves the current filter settings to `.dlt-tui.toml` so you can reload them with `L` next time.
 
 ## Keybindings
 
@@ -100,8 +100,8 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `a`                    | Filter by APP ID                       |
 | `c`                    | Filter by CTX ID                       |
 | `C`                    | Clear all filters                      |
-| `S`                    | Save filter block to `.dlt-tui.toml`   |
-| `L`                    | Load filter block from `.dlt-tui.toml` |
+| `S`                    | Save filter settings to `.dlt-tui.toml` |
+| `L`                    | Load filter settings from `.dlt-tui.toml` |
 | `F`                    | Toggle auto-scroll (tail mode)         |
 | `t`                    | Toggle delta time between messages     |
 | `E`                    | Export filtered logs to file           |
@@ -119,7 +119,7 @@ Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In 
 ## Notes
 
 - TCP mode (`--connect`) and file or directory paths are mutually exclusive.
-- Files larger than 500 MB are rejected (the limit applies after decompression as a zip-bomb guard).
+- Each input is limited to 500 MiB (524,288,000 bytes); compressed inputs are checked after decompression as a zip-bomb guard.
 - Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
 - `.zip` archives: only the first file entry is read; directory entries are skipped. Zip one `.dlt` per archive, or use `.gz`.
 - `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
