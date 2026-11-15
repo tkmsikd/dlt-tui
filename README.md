@@ -124,6 +124,7 @@ In the detail view, `j`/`k` changes logs and PageUp/PageDown scrolls the detail 
 - TCP mode (`--connect`) and file or directory paths are mutually exclusive.
 - Each input is limited to 500 MiB (524,288,000 bytes); compressed inputs are checked after decompression as a zip-bomb guard.
 - Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
+- Storage timestamps are treated as absolute time. Daemon-relative timestamps display as ticks and retain per-source input order across resets; deltas across clock domains or detected restarts show `N/A`.
 - `.zip` archives: only the first file entry is read; directory entries are skipped. Zip one `.dlt` per archive, or use `.gz`.
 - `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
 - Payload text is sanitized before rendering, so logs containing escape sequences can't mess with your terminal.
