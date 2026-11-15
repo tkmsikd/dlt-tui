@@ -1195,6 +1195,10 @@ impl App {
             self.info_message = Some("An export is already in progress".to_string());
             return;
         }
+        if self.filter_scan_cursor.is_some() {
+            self.error_message = Some("Wait for filtering to finish before exporting".to_string());
+            return;
+        }
         if self.filtered_log_indices.is_empty() {
             self.error_message = Some("No logs to export".to_string());
             return;
@@ -2430,6 +2434,21 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).unwrap().lines().count(),
             MAX_LOGS_PER_TICK + 2
+        );
+    }
+
+    #[test]
+    fn test_export_rejects_incomplete_filter_results() {
+        let mut app = App::new();
+        app.filtered_log_indices = vec![0];
+        app.filter_scan_cursor = Some(1);
+
+        app.on_export();
+
+        assert!(app.export_job.is_none());
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Wait for filtering to finish before exporting")
         );
     }
 
