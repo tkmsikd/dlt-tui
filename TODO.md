@@ -15,8 +15,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 3. Preserve the selected log while loading
 
-- [ ] Track selection by log identity when timestamp merges insert rows before it.
-- [ ] Preserve current tail-follow behavior.
+- [x] Track selection by log identity when timestamp merges insert rows before it.
+- [x] Preserve current tail-follow behavior (the existing auto-scroll override remains unchanged).
 
 ## 4. Measure and improve large multi-file merges
 

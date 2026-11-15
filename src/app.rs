@@ -366,6 +366,11 @@ impl App {
             return;
         }
 
+        let selected_log = self
+            .filtered_log_indices
+            .get(self.logs_selected_index)
+            .copied();
+
         let logs = &self.logs;
         if !incoming
             .windows(2)
@@ -379,28 +384,36 @@ impl App {
                 <= Self::log_sort_key(logs, incoming[0])
         {
             self.filtered_log_indices.extend(incoming);
-            return;
-        }
+        } else {
+            let first_key = Self::log_sort_key(logs, incoming[0]);
+            let split = self
+                .filtered_log_indices
+                .partition_point(|&idx| Self::log_sort_key(logs, idx) < first_key);
+            let tail = self.filtered_log_indices.split_off(split);
+            let mut existing = tail.into_iter().peekable();
+            let mut incoming = incoming.into_iter().peekable();
+            let mut merged = Vec::with_capacity(existing.len() + incoming.len());
 
-        let first_key = Self::log_sort_key(logs, incoming[0]);
-        let split = self
-            .filtered_log_indices
-            .partition_point(|&idx| Self::log_sort_key(logs, idx) < first_key);
-        let tail = self.filtered_log_indices.split_off(split);
-        let mut existing = tail.into_iter().peekable();
-        let mut incoming = incoming.into_iter().peekable();
-        let mut merged = Vec::with_capacity(existing.len() + incoming.len());
-
-        while let (Some(&left), Some(&right)) = (existing.peek(), incoming.peek()) {
-            if Self::log_sort_key(logs, left) <= Self::log_sort_key(logs, right) {
-                merged.push(existing.next().unwrap());
-            } else {
-                merged.push(incoming.next().unwrap());
+            while let (Some(&left), Some(&right)) = (existing.peek(), incoming.peek()) {
+                if Self::log_sort_key(logs, left) <= Self::log_sort_key(logs, right) {
+                    merged.push(existing.next().unwrap());
+                } else {
+                    merged.push(incoming.next().unwrap());
+                }
             }
+            merged.extend(existing);
+            merged.extend(incoming);
+            self.filtered_log_indices.extend(merged);
         }
-        merged.extend(existing);
-        merged.extend(incoming);
-        self.filtered_log_indices.extend(merged);
+
+        if let Some(selected_log) = selected_log
+            && let Some(position) = self
+                .filtered_log_indices
+                .iter()
+                .position(|&idx| idx == selected_log)
+        {
+            self.logs_selected_index = position;
+        }
     }
 
     fn log_sort_key(logs: &[LogEntry], idx: usize) -> (bool, u64, usize, usize) {
@@ -1191,6 +1204,22 @@ mod tests {
         app.merge_filtered_indices(vec![2, 1]);
 
         assert_eq!(app.filtered_log_indices, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn test_merge_filtered_indices_preserves_selected_log() {
+        let mut app = App::new();
+        app.logs.push(mock_entry(200, "selected", None, 0));
+        app.logs.push(mock_entry(100, "earlier", None, 1));
+        app.filtered_log_indices = vec![0];
+
+        app.merge_filtered_indices(vec![1]);
+
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(
+            app.selected_entry().unwrap().message.payload_text(),
+            "selected"
+        );
     }
 
     #[test]
