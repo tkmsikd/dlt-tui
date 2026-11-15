@@ -104,6 +104,7 @@ pub struct App {
     /// on_tick() only appends new indices if filter_generation hasn't changed.
     filter_generation: u64,
     text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
+    filter_scan_cursor: Option<usize>,
 }
 
 impl Default for App {
@@ -141,6 +142,7 @@ impl App {
             file_errors: None,
             filter_generation: 0,
             text_regex_cache: None,
+            filter_scan_cursor: None,
         }
     }
 
@@ -390,26 +392,47 @@ impl App {
     }
 
     pub fn apply_filter(&mut self) {
+        self.begin_filter();
+        while self.filter_scan_cursor.is_some() {
+            self.process_filter_chunk(usize::MAX);
+        }
+    }
+
+    pub fn begin_filter(&mut self) {
         self.filtered_log_indices.clear();
+        self.source_count_cache.clear();
+        self.ctx_count_cache.clear();
 
-        // BUG-1: bump generation so on_tick won't append with stale filter
         self.filter_generation = self.filter_generation.wrapping_add(1);
+        self.filter_scan_cursor = Some(0);
+        self.logs_selected_index = 0;
+        if self.logs.len() <= MAX_LOGS_PER_TICK {
+            self.process_filter_chunk(MAX_LOGS_PER_TICK);
+        }
+    }
 
-        // Compile regex once if text filter exists
-        // SEC-1: size_limit prevents ReDoS from malicious patterns
+    fn process_filter_chunk(&mut self, max_items: usize) {
+        let Some(start) = self.filter_scan_cursor else {
+            return;
+        };
+        let end = start.saturating_add(max_items).min(self.logs.len());
+        let filter = self.filter.clone();
         let text_regex = self.compiled_text_regex();
+        let mut matching = Vec::new();
 
-        for (idx, log) in self.logs.iter().enumerate() {
-            if Self::check_log_against_filter(&log.message, &self.filter, text_regex.as_ref()) {
-                self.filtered_log_indices.push(idx);
+        for idx in start..end {
+            if Self::check_log_against_filter(&self.logs[idx].message, &filter, text_regex.as_ref())
+            {
+                matching.push(idx);
+                self.increment_sidebar_counts(idx);
             }
         }
 
-        self.sort_filtered_indices();
-        self.rebuild_sidebar_counts();
-        self.logs_selected_index = 0;
+        self.filter_scan_cursor = (end < self.logs.len()).then_some(end);
+        self.merge_filtered_indices(matching);
     }
 
+    #[cfg(test)]
     fn sort_filtered_indices(&mut self) {
         let logs = &self.logs;
         self.filtered_log_indices
@@ -477,17 +500,6 @@ impl App {
             entry.source_index,
             idx,
         )
-    }
-
-    fn rebuild_sidebar_counts(&mut self) {
-        self.source_count_cache.clear();
-        self.ctx_count_cache.clear();
-        for &idx in &self.filtered_log_indices {
-            let source = self.logs[idx].source_name();
-            Self::increment_count(&mut self.source_count_cache, source);
-            let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
-            Self::increment_count(&mut self.ctx_count_cache, ctx);
-        }
     }
 
     fn increment_sidebar_counts(&mut self, idx: usize) {
@@ -614,7 +626,7 @@ impl App {
                 // BUG-1: Only append incrementally if filter hasn't been reapplied
                 // since we captured current_gen. If it changed, apply_filter()
                 // already rebuilt the full index, so skip incremental append.
-                if self.filter_generation == current_gen {
+                if self.filter_generation == current_gen && self.filter_scan_cursor.is_none() {
                     let mut new_filtered_indices =
                         Vec::with_capacity(self.logs.len() - current_len);
                     for idx in current_len..self.logs.len() {
@@ -632,6 +644,10 @@ impl App {
                     self.logs_selected_index = self.filtered_log_indices.len() - 1;
                 }
             }
+        }
+
+        if self.filter_scan_cursor.is_some() {
+            self.process_filter_chunk(MAX_LOGS_PER_TICK);
         }
     }
 
@@ -772,7 +788,7 @@ impl App {
                             self.filter.min_level = level;
                         }
                     }
-                    self.apply_filter();
+                    self.begin_filter();
                     if was_cleared {
                         self.info_message = Some("Filter cleared".to_string());
                     }
@@ -856,7 +872,7 @@ impl App {
             }
             KeyCode::Char('L') if self.screen == AppScreen::LogViewer => {
                 self.load_filter_config();
-                self.apply_filter();
+                self.begin_filter();
             }
             KeyCode::Char('t') if self.screen == AppScreen::LogViewer => {
                 self.show_time_delta = !self.show_time_delta;
@@ -912,7 +928,7 @@ impl App {
             }
             KeyCode::Char('C') if self.screen == AppScreen::LogViewer => {
                 self.filter = Filter::default();
-                self.apply_filter();
+                self.begin_filter();
             }
             KeyCode::Char('F') if self.screen == AppScreen::LogViewer => {
                 self.auto_scroll = !self.auto_scroll;
@@ -2047,6 +2063,29 @@ mod tests {
         assert_eq!(app.logs_selected_index, total - 1);
         assert!(app.log_receiver.is_none());
         assert!(!app.is_loading);
+    }
+
+    #[test]
+    fn test_filter_scan_processes_large_logs_incrementally() {
+        let mut app = App::new();
+        for i in 0..(MAX_LOGS_PER_TICK * 2 + 1) {
+            app.logs.push(mock_entry(i as u64, "message", None, 0));
+        }
+
+        app.begin_filter();
+        assert!(app.filtered_log_indices.is_empty());
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
+        assert!(app.filter_scan_cursor.is_some());
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2);
+        assert!(app.filter_scan_cursor.is_some());
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2 + 1);
+        assert!(app.filter_scan_cursor.is_none());
     }
 
     #[test]

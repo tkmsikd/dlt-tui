@@ -40,7 +40,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 8. Keep the interface responsive during full scans and exports
 
-- [ ] Move long full-log filtering and export work off the UI event loop or process it incrementally.
+- [x] Process large interactive filter scans incrementally across UI ticks.
+- [ ] Move long export work off the UI event loop or process it incrementally.
 - [x] Buffer export writes.
 
 ## 9. Make Source and CTX navigation scale
