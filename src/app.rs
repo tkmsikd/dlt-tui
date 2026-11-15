@@ -123,6 +123,8 @@ pub struct App {
     pub sidebar_focus: SidebarFocus,
     pub source_sidebar_selected_index: usize,
     pub ctx_sidebar_selected_index: usize,
+    source_sidebar_selected_key: Option<String>,
+    ctx_sidebar_selected_key: Option<Option<String>>,
     pub filter: Filter,
     pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
@@ -169,6 +171,8 @@ impl App {
             sidebar_focus: SidebarFocus::Logs,
             source_sidebar_selected_index: 0,
             ctx_sidebar_selected_index: 0,
+            source_sidebar_selected_key: None,
+            ctx_sidebar_selected_key: None,
             filter: Filter::default(),
             filter_input_mode: None,
             filter_input: String::new(),
@@ -489,6 +493,7 @@ impl App {
 
         self.filter_scan_cursor = (end < self.logs.len()).then_some(end);
         self.merge_filtered_indices(matching);
+        self.sync_sidebar_selection();
     }
 
     #[cfg(test)]
@@ -576,6 +581,65 @@ impl App {
             Self::increment_count(&mut self.ctx_count_cache, ctx);
         } else {
             self.ctx_missing_count += 1;
+        }
+    }
+
+    fn remember_sidebar_selection(&mut self) {
+        match self.sidebar_focus {
+            SidebarFocus::Sources => {
+                self.source_sidebar_selected_key = Self::ranked_keys(&self.source_count_cache)
+                    .get(self.source_sidebar_selected_index)
+                    .cloned();
+            }
+            SidebarFocus::Contexts => {
+                self.ctx_sidebar_selected_key = self
+                    .ranked_ctx_entries()
+                    .get(self.ctx_sidebar_selected_index)
+                    .map(|(ctx, _)| ctx.clone());
+            }
+            SidebarFocus::Logs => {}
+        }
+    }
+
+    fn sync_sidebar_selection(&mut self) {
+        let sources = Self::ranked_keys(&self.source_count_cache);
+        if let Some(key) = &self.source_sidebar_selected_key {
+            if let Some(index) = sources.iter().position(|candidate| candidate == key) {
+                self.source_sidebar_selected_index = index;
+            } else if self.filter_scan_cursor.is_none() {
+                self.source_sidebar_selected_index = self
+                    .source_sidebar_selected_index
+                    .min(sources.len().saturating_sub(1));
+                self.source_sidebar_selected_key =
+                    sources.get(self.source_sidebar_selected_index).cloned();
+            }
+        } else {
+            self.source_sidebar_selected_index = self
+                .source_sidebar_selected_index
+                .min(sources.len().saturating_sub(1));
+            self.source_sidebar_selected_key =
+                sources.get(self.source_sidebar_selected_index).cloned();
+        }
+
+        let contexts = self.ranked_ctx_entries();
+        if let Some(key) = &self.ctx_sidebar_selected_key {
+            if let Some(index) = contexts.iter().position(|(candidate, _)| candidate == key) {
+                self.ctx_sidebar_selected_index = index;
+            } else if self.filter_scan_cursor.is_none() {
+                self.ctx_sidebar_selected_index = self
+                    .ctx_sidebar_selected_index
+                    .min(contexts.len().saturating_sub(1));
+                self.ctx_sidebar_selected_key = contexts
+                    .get(self.ctx_sidebar_selected_index)
+                    .map(|(ctx, _)| ctx.clone());
+            }
+        } else {
+            self.ctx_sidebar_selected_index = self
+                .ctx_sidebar_selected_index
+                .min(contexts.len().saturating_sub(1));
+            self.ctx_sidebar_selected_key = contexts
+                .get(self.ctx_sidebar_selected_index)
+                .map(|(ctx, _)| ctx.clone());
         }
     }
 
@@ -723,6 +787,7 @@ impl App {
                         }
                     }
                     self.merge_filtered_indices(new_filtered_indices);
+                    self.sync_sidebar_selection();
                 }
 
                 // Auto-scroll: keep cursor at the end when in tail mode
@@ -744,11 +809,13 @@ impl App {
                 SidebarFocus::Sources => {
                     self.source_sidebar_selected_index =
                         self.source_sidebar_selected_index.saturating_sub(1);
+                    self.remember_sidebar_selection();
                     return;
                 }
                 SidebarFocus::Contexts => {
                     self.ctx_sidebar_selected_index =
                         self.ctx_sidebar_selected_index.saturating_sub(1);
+                    self.remember_sidebar_selection();
                     return;
                 }
                 SidebarFocus::Logs => {}
@@ -782,6 +849,7 @@ impl App {
                         .source_sidebar_selected_index
                         .saturating_add(1)
                         .min(self.source_count_cache.len().saturating_sub(1));
+                    self.remember_sidebar_selection();
                     return;
                 }
                 SidebarFocus::Contexts => {
@@ -789,6 +857,7 @@ impl App {
                         .ctx_sidebar_selected_index
                         .saturating_add(1)
                         .min(self.ranked_ctx_entries().len().saturating_sub(1));
+                    self.remember_sidebar_selection();
                     return;
                 }
                 SidebarFocus::Logs => {}
@@ -829,17 +898,12 @@ impl App {
     fn select_sidebar_filter(&mut self) {
         match self.sidebar_focus {
             SidebarFocus::Sources => {
-                if let Some(source) = Self::ranked_keys(&self.source_count_cache)
-                    .get(self.source_sidebar_selected_index)
-                {
+                if let Some(source) = self.source_sidebar_selected_key.as_ref() {
                     self.filter.source = Some(source.clone());
                 }
             }
             SidebarFocus::Contexts => {
-                if let Some((ctx, _)) = self
-                    .ranked_ctx_entries()
-                    .get(self.ctx_sidebar_selected_index)
-                {
+                if let Some(ctx) = self.ctx_sidebar_selected_key.as_ref() {
                     self.filter.ctx_id = ctx.clone();
                     self.filter.ctx_missing = ctx.is_none();
                 }
@@ -860,6 +924,7 @@ impl App {
                         .position(|key| *key == selected_key)
                     {
                         self.source_sidebar_selected_index = position;
+                        self.source_sidebar_selected_key = Some(selected_key);
                     }
                 }
                 SidebarFocus::Sources
@@ -873,6 +938,7 @@ impl App {
                         .position(|(ctx, _)| *ctx == selected_ctx)
                     {
                         self.ctx_sidebar_selected_index = position;
+                        self.ctx_sidebar_selected_key = Some(selected_ctx);
                     }
                 }
                 SidebarFocus::Contexts
@@ -1749,6 +1815,71 @@ mod tests {
         assert_eq!(app.source_sidebar_selected_index, 19);
         app.on_down();
         assert_eq!(app.source_sidebar_selected_index, 19);
+    }
+
+    #[test]
+    fn test_sidebar_selection_tracks_identity_when_counts_change() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..10 {
+            let mut entry = mock_entry(i, "source A", Some("source-a.dlt"), 0);
+            entry.message.ctid = Some("CTX_A".to_string());
+            app.logs.push(entry);
+        }
+        for i in 0..9 {
+            let mut entry = mock_entry(10 + i, "source B", Some("source-b.dlt"), 1);
+            entry.message.ctid = Some("CTX_B".to_string());
+            app.logs.push(entry);
+        }
+        app.apply_filter();
+
+        app.sidebar_focus = SidebarFocus::Sources;
+        app.source_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..2 {
+            let mut entry = mock_entry(20 + i, "source B new", Some("source-b.dlt"), 1);
+            entry.message.ctid = Some("CTX_B".to_string());
+            tx.send(entry).unwrap();
+        }
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.on_tick();
+
+        assert_eq!(app.source_sidebar_selected_index, 0);
+        assert_eq!(app.ctx_sidebar_selected_index, 0);
+        assert_eq!(
+            app.source_sidebar_selected_key.as_deref(),
+            Some("source-b.dlt")
+        );
+        assert_eq!(
+            app.ctx_sidebar_selected_key,
+            Some(Some("CTX_B".to_string()))
+        );
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 11);
+        assert!(app.filtered_log_indices.iter().all(|&idx| {
+            app.logs[idx].message.ctid.as_deref() == Some("CTX_B")
+                && app.logs[idx].source_name() == "source-b.dlt"
+        }));
+
+        app.filter = Filter::default();
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Sources;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 11);
+        assert!(
+            app.filtered_log_indices
+                .iter()
+                .all(|&idx| { app.logs[idx].source_name() == "source-b.dlt" })
+        );
     }
 
     // ==================== Page scrolling tests ====================
