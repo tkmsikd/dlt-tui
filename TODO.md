@@ -30,8 +30,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 6. Make filter configuration writes durable
 
-- [ ] Replace direct truncating writes with a same-directory temporary file and atomic replacement.
-- [ ] Report malformed or unreadable configuration and bound actual bytes read.
+- [x] Replace direct truncating writes with a same-directory temporary file and atomic replacement.
+- [x] Report malformed or unreadable configuration and bound actual bytes read.
 
 ## 7. Reuse compiled text filters
 

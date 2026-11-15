@@ -1,6 +1,7 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -9,6 +10,8 @@ use std::sync::{
 
 const LOG_CHANNEL_CAPACITY: usize = 256;
 const MAX_LOGS_PER_TICK: usize = 1024;
+const MAX_FILTER_CONFIG_BYTES: u64 = 1_048_576;
+static CONFIG_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
@@ -141,28 +144,63 @@ impl App {
 
     pub fn load_filter_config(&mut self) {
         let path = std::path::Path::new(".dlt-tui.toml");
-        // SEC-4: check file size before reading (1MB limit)
-        if let Ok(meta) = std::fs::metadata(path)
-            && meta.len() > 1_048_576
-        {
-            self.error_message = Some("Config file too large (>1MB)".to_string());
-            return;
-        }
-        if path.exists()
-            && let Ok(content) = std::fs::read_to_string(path)
-            && let Ok(filter) = toml::from_str::<Filter>(&content)
-        {
-            self.filter = filter;
-            self.info_message = Some("Loaded filter from .dlt-tui.toml".to_string());
+        match std::fs::File::open(path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                if let Err(error) = file
+                    .take(MAX_FILTER_CONFIG_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                {
+                    self.error_message = Some(format!("Failed to read filter config: {error}"));
+                    return;
+                }
+                if bytes.len() as u64 > MAX_FILTER_CONFIG_BYTES {
+                    self.error_message = Some("Config file too large (>1MB)".to_string());
+                    return;
+                }
+                match toml::from_slice::<Filter>(&bytes) {
+                    Ok(filter) => {
+                        self.filter = filter;
+                        self.info_message = Some("Loaded filter from .dlt-tui.toml".to_string());
+                    }
+                    Err(error) => {
+                        self.error_message = Some(format!("Invalid filter config: {error}"));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.error_message = Some(format!("Failed to read filter config: {error}"));
+            }
         }
     }
 
     pub fn save_filter_config(&mut self) {
         if let Ok(content) = toml::to_string(&self.filter) {
-            if std::fs::write(".dlt-tui.toml", content).is_ok() {
-                self.info_message = Some("Saved filter to .dlt-tui.toml".to_string());
-            } else {
-                self.error_message = Some("Failed to save filter config".to_string());
+            let destination = Path::new(".dlt-tui.toml");
+            let temp_path = destination.with_file_name(format!(
+                ".dlt-tui.toml.{}.{}.tmp",
+                std::process::id(),
+                CONFIG_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            let save_result = (|| {
+                let mut temp = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp_path)?;
+                std::io::Write::write_all(&mut temp, content.as_bytes())?;
+                temp.sync_all()?;
+                drop(temp);
+                std::fs::rename(&temp_path, destination)
+            })();
+            match save_result {
+                Ok(()) => {
+                    self.info_message = Some("Saved filter to .dlt-tui.toml".to_string());
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    self.error_message = Some(format!("Failed to save filter config: {error}"));
+                }
             }
         } else {
             self.error_message = Some("Failed to serialize filter".to_string());
