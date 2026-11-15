@@ -6,7 +6,7 @@ use ratatui::{
 };
 use std::ops::Range;
 
-use crate::app::{App, AppScreen};
+use crate::app::{App, AppScreen, SidebarFocus};
 
 pub fn format_timestamp(us: u64) -> String {
     let total_secs = us / 1_000_000;
@@ -197,7 +197,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
                     ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-"))
                         .style(Style::default().fg(ctx_color(log.ctid.as_deref().unwrap_or("-")))),
-                    ratatui::widgets::Cell::from(entry.source_name()),
+                    ratatui::widgets::Cell::from(entry.source_identity()),
                     ratatui::widgets::Cell::from(payload_display),
                 ];
                 ratatui::widgets::Row::new(cells).height(1)
@@ -253,7 +253,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     log.ecu_id,
                     log.apid.as_deref().unwrap_or("-"),
                     log.ctid.as_deref().unwrap_or("-"),
-                    entry.source_name(),
+                    entry.source_identity(),
                     log.log_level,
                     log.payload_text()
                 );
@@ -413,7 +413,7 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(area);
-    let selected_source = app.selected_entry().map(|entry| entry.source_name());
+    let selected_source = app.selected_entry().map(|entry| entry.source_identity());
     let selected_ctx = app
         .selected_entry()
         .and_then(|entry| entry.message.ctid.as_deref())
@@ -422,29 +422,51 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let source_capacity = sidebar_chunks[0].height.saturating_sub(2) as usize;
     let mut source_counts: Vec<_> = app.source_counts().iter().collect();
     source_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let source_items = source_counts
-        .into_iter()
-        .take(source_capacity)
-        .map(|(source, count)| {
-            let marker = if Some(source.as_str()) == selected_source {
-                ">"
+    let source_range = visible_sidebar_range(
+        source_counts.len(),
+        app.source_sidebar_selected_index,
+        source_capacity,
+    );
+    let source_items: Vec<_> = source_counts
+        .iter()
+        .enumerate()
+        .skip(source_range.start)
+        .take(source_range.len())
+        .map(|(index, (source, count))| {
+            let selected = if app.sidebar_focus == SidebarFocus::Sources {
+                index == app.source_sidebar_selected_index
             } else {
-                " "
+                Some(source.as_str()) == selected_source.as_deref()
             };
+            let marker = if selected { ">" } else { " " };
             ListItem::new(format!("{} {:>5} {}", marker, count, source))
-        });
+        })
+        .collect();
 
     let ctx_capacity = sidebar_chunks[1].height.saturating_sub(2) as usize;
     let mut ctx_counts: Vec<_> = app.ctx_counts().iter().collect();
     ctx_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let ctx_items = ctx_counts
-        .into_iter()
-        .take(ctx_capacity)
-        .map(|(ctx, count)| {
-            let marker = if ctx == selected_ctx { ">" } else { " " };
+    let ctx_range = visible_sidebar_range(
+        ctx_counts.len(),
+        app.ctx_sidebar_selected_index,
+        ctx_capacity,
+    );
+    let ctx_items: Vec<_> = ctx_counts
+        .iter()
+        .enumerate()
+        .skip(ctx_range.start)
+        .take(ctx_range.len())
+        .map(|(index, (ctx, count))| {
+            let selected = if app.sidebar_focus == SidebarFocus::Contexts {
+                index == app.ctx_sidebar_selected_index
+            } else {
+                ctx.as_str() == selected_ctx
+            };
+            let marker = if selected { ">" } else { " " };
             ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
                 .style(Style::default().fg(ctx_color(ctx)))
-        });
+        })
+        .collect();
 
     let sources = List::new(source_items).block(
         Block::default()
@@ -452,7 +474,14 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     );
-    f.render_widget(sources, sidebar_chunks[0]);
+    let mut source_state = ratatui::widgets::ListState::default();
+    if app.sidebar_focus == SidebarFocus::Sources && source_capacity > 0 {
+        source_state.select(Some(
+            app.source_sidebar_selected_index
+                .saturating_sub(source_range.start),
+        ));
+    }
+    f.render_stateful_widget(sources, sidebar_chunks[0], &mut source_state);
 
     let contexts = List::new(ctx_items).block(
         Block::default()
@@ -460,7 +489,23 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta)),
     );
-    f.render_widget(contexts, sidebar_chunks[1]);
+    let mut ctx_state = ratatui::widgets::ListState::default();
+    if app.sidebar_focus == SidebarFocus::Contexts && ctx_capacity > 0 {
+        ctx_state.select(Some(
+            app.ctx_sidebar_selected_index
+                .saturating_sub(ctx_range.start),
+        ));
+    }
+    f.render_stateful_widget(contexts, sidebar_chunks[1], &mut ctx_state);
+}
+
+fn visible_sidebar_range(len: usize, selected: usize, capacity: usize) -> Range<usize> {
+    if len == 0 || capacity == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(len - 1);
+    let start = selected.saturating_sub(capacity - 1);
+    start..(start + capacity).min(len)
 }
 
 #[cfg(test)]

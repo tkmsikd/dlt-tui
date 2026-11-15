@@ -94,7 +94,8 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `Shift+Left`/`Right`   | Scroll payload horizontally fast       |
 | `g` / `Home`           | Jump to first log                      |
 | `G` / `End`            | Jump to last log                       |
-| `Enter`                | Open detail view with hex dump         |
+| `Tab`                  | Focus logs, Sources, or Contexts        |
+| `Enter`                | Apply selected Source/CTX filter, or open log detail |
 | `/`                    | Search text (regex supported)          |
 | `l`                    | Filter by log level (F/E/W/I/D/V)      |
 | `a`                    | Filter by APP ID                       |
@@ -106,6 +107,8 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `t`                    | Toggle delta time between messages     |
 | `E`                    | Export filtered logs to file           |
 | `q` / `Esc`            | Back to File Explorer                  |
+
+When Sources or Contexts has focus, `j`/`k` navigates the complete ranked list, including entries outside the visible pane. Source entries use their paths so files with the same basename remain distinct.
 
 ### Log Detail
 

@@ -46,8 +46,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 9. Make Source and CTX navigation scale
 
-- [ ] Allow navigating all sidebar entries, not only the visible top counts.
-- [ ] Distinguish files that share a basename.
+- [x] Allow navigating all sidebar entries, not only the visible top counts (Tab focus, arrows, Enter to filter).
+- [x] Distinguish files that share a basename by using full source paths as identities and labels.
 
 ## 10. Scroll large log details
 

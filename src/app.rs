@@ -27,6 +27,7 @@ pub struct Filter {
     pub min_level: Option<crate::parser::LogLevel>,
     pub app_id: Option<String>,
     pub ctx_id: Option<String>,
+    pub source: Option<String>,
     pub text: Option<String>,
 }
 
@@ -36,6 +37,14 @@ pub enum FilterInputMode {
     AppId,
     CtxId,
     MinLevel,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarFocus {
+    #[default]
+    Logs,
+    Sources,
+    Contexts,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -90,6 +99,13 @@ impl LogEntry {
             .and_then(|name| name.to_str())
             .unwrap_or("-")
     }
+
+    pub fn source_identity(&self) -> String {
+        self.source_file
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "-".to_string())
+    }
 }
 
 pub struct App {
@@ -101,6 +117,9 @@ pub struct App {
     source_count_cache: BTreeMap<String, usize>,
     ctx_count_cache: BTreeMap<String, usize>,
     pub logs_selected_index: usize,
+    pub sidebar_focus: SidebarFocus,
+    pub source_sidebar_selected_index: usize,
+    pub ctx_sidebar_selected_index: usize,
     pub filter: Filter,
     pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
@@ -142,6 +161,9 @@ impl App {
             source_count_cache: BTreeMap::new(),
             ctx_count_cache: BTreeMap::new(),
             logs_selected_index: 0,
+            sidebar_focus: SidebarFocus::Logs,
+            source_sidebar_selected_index: 0,
+            ctx_sidebar_selected_index: 0,
             filter: Filter::default(),
             filter_input_mode: None,
             filter_input: String::new(),
@@ -324,10 +346,16 @@ impl App {
     }
 
     fn check_log_against_filter(
-        log: &DltMessage,
+        entry: &LogEntry,
         filter: &Filter,
         regex: Option<&regex::Regex>,
     ) -> bool {
+        let log = &entry.message;
+        if let Some(source) = &filter.source
+            && entry.source_identity() != *source
+        {
+            return false;
+        }
         if let Some(ref min_level) = filter.min_level {
             // Determine if log_level is severe enough or matches
             // Simplification for MVP: We just check exact equality or we can skip for now
@@ -441,8 +469,7 @@ impl App {
         let mut matching = Vec::new();
 
         for idx in start..end {
-            if Self::check_log_against_filter(&self.logs[idx].message, &filter, text_regex.as_ref())
-            {
+            if Self::check_log_against_filter(&self.logs[idx], &filter, text_regex.as_ref()) {
                 matching.push(idx);
                 self.increment_sidebar_counts(idx);
             }
@@ -523,8 +550,8 @@ impl App {
     }
 
     fn increment_sidebar_counts(&mut self, idx: usize) {
-        let source = self.logs[idx].source_name();
-        Self::increment_count(&mut self.source_count_cache, source);
+        let source = self.logs[idx].source_identity();
+        Self::increment_count(&mut self.source_count_cache, &source);
         let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
         Self::increment_count(&mut self.ctx_count_cache, ctx);
     }
@@ -650,8 +677,11 @@ impl App {
                     let mut new_filtered_indices =
                         Vec::with_capacity(self.logs.len() - current_len);
                     for idx in current_len..self.logs.len() {
-                        let log = &self.logs[idx].message;
-                        if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
+                        if Self::check_log_against_filter(
+                            &self.logs[idx],
+                            &self.filter,
+                            text_regex.as_ref(),
+                        ) {
                             new_filtered_indices.push(idx);
                             self.increment_sidebar_counts(idx);
                         }
@@ -673,6 +703,21 @@ impl App {
     }
 
     pub fn on_up(&mut self) {
+        if self.screen == AppScreen::LogViewer {
+            match self.sidebar_focus {
+                SidebarFocus::Sources => {
+                    self.source_sidebar_selected_index =
+                        self.source_sidebar_selected_index.saturating_sub(1);
+                    return;
+                }
+                SidebarFocus::Contexts => {
+                    self.ctx_sidebar_selected_index =
+                        self.ctx_sidebar_selected_index.saturating_sub(1);
+                    return;
+                }
+                SidebarFocus::Logs => {}
+            }
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if self.explorer_selected_index > 0 {
@@ -688,6 +733,25 @@ impl App {
     }
 
     pub fn on_down(&mut self) {
+        if self.screen == AppScreen::LogViewer {
+            match self.sidebar_focus {
+                SidebarFocus::Sources => {
+                    self.source_sidebar_selected_index = self
+                        .source_sidebar_selected_index
+                        .saturating_add(1)
+                        .min(self.source_count_cache.len().saturating_sub(1));
+                    return;
+                }
+                SidebarFocus::Contexts => {
+                    self.ctx_sidebar_selected_index = self
+                        .ctx_sidebar_selected_index
+                        .saturating_add(1)
+                        .min(self.ctx_count_cache.len().saturating_sub(1));
+                    return;
+                }
+                SidebarFocus::Logs => {}
+            }
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if !self.explorer_items.is_empty()
@@ -704,6 +768,63 @@ impl App {
                 }
             }
         }
+    }
+
+    fn ranked_keys(counts: &BTreeMap<String, usize>) -> Vec<String> {
+        let mut entries: Vec<_> = counts.iter().collect();
+        entries.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        entries.into_iter().map(|(key, _)| key.clone()).collect()
+    }
+
+    fn select_sidebar_filter(&mut self) {
+        match self.sidebar_focus {
+            SidebarFocus::Sources => {
+                if let Some(source) = Self::ranked_keys(&self.source_count_cache)
+                    .get(self.source_sidebar_selected_index)
+                {
+                    self.filter.source = Some(source.clone());
+                }
+            }
+            SidebarFocus::Contexts => {
+                if let Some(ctx) =
+                    Self::ranked_keys(&self.ctx_count_cache).get(self.ctx_sidebar_selected_index)
+                {
+                    self.filter.ctx_id = Some(ctx.clone());
+                }
+            }
+            SidebarFocus::Logs => return,
+        }
+        self.sidebar_focus = SidebarFocus::Logs;
+        self.begin_filter();
+    }
+
+    fn cycle_sidebar_focus(&mut self) {
+        self.sidebar_focus = match self.sidebar_focus {
+            SidebarFocus::Logs => {
+                if let Some(selected) = self.selected_entry() {
+                    let selected_key = selected.source_identity();
+                    if let Some(position) = Self::ranked_keys(&self.source_count_cache)
+                        .iter()
+                        .position(|key| *key == selected_key)
+                    {
+                        self.source_sidebar_selected_index = position;
+                    }
+                }
+                SidebarFocus::Sources
+            }
+            SidebarFocus::Sources => {
+                if let Some(selected) = self.selected_entry()
+                    && let Some(ctx) = selected.message.ctid.as_deref()
+                    && let Some(position) = Self::ranked_keys(&self.ctx_count_cache)
+                        .iter()
+                        .position(|key| key == ctx)
+                {
+                    self.ctx_sidebar_selected_index = position;
+                }
+                SidebarFocus::Contexts
+            }
+            SidebarFocus::Contexts => SidebarFocus::Logs,
+        };
     }
 
     /// Move selection down by `page_size` rows (full page scroll)
@@ -954,6 +1075,7 @@ impl App {
             KeyCode::Char('F') if self.screen == AppScreen::LogViewer => {
                 self.auto_scroll = !self.auto_scroll;
             }
+            KeyCode::Tab if self.screen == AppScreen::LogViewer => self.cycle_sidebar_focus(),
             KeyCode::Enter => {
                 if self.screen == AppScreen::Explorer {
                     // BUG-2: bounds check before accessing explorer_items
@@ -971,10 +1093,12 @@ impl App {
                             }
                         }
                     }
-                } else if self.screen == AppScreen::LogViewer
-                    && !self.filtered_log_indices.is_empty()
-                {
-                    self.screen = AppScreen::LogDetail;
+                } else if self.screen == AppScreen::LogViewer {
+                    if self.sidebar_focus != SidebarFocus::Logs {
+                        self.select_sidebar_filter();
+                    } else if !self.filtered_log_indices.is_empty() {
+                        self.screen = AppScreen::LogDetail;
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -1450,6 +1574,51 @@ mod tests {
         assert_eq!(app.source_counts().len(), 1);
         assert_eq!(app.source_counts().get("ctx_b.dlt"), Some(&1));
         assert_eq!(app.ctx_counts().get("CTX1"), Some(&1));
+    }
+
+    #[test]
+    fn test_source_filter_distinguishes_matching_basenames() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.logs
+            .push(mock_entry(1, "first", Some("left/trace.dlt"), 0));
+        app.logs
+            .push(mock_entry(2, "second", Some("right/trace.dlt"), 1));
+        app.apply_filter();
+        assert_eq!(app.source_counts().len(), 2);
+
+        app.handle_key(make_key(KeyCode::Tab), 20);
+        app.handle_key(make_key(KeyCode::Down), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert_eq!(
+            app.logs[app.filtered_log_indices[0]].source_identity(),
+            "right/trace.dlt"
+        );
+    }
+
+    #[test]
+    fn test_sidebar_navigation_reaches_entries_beyond_initial_view() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..20 {
+            app.logs.push(mock_entry(
+                i as u64,
+                "entry",
+                Some(&format!("source-{i:02}.dlt")),
+                i,
+            ));
+        }
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Sources;
+        for _ in 0..19 {
+            app.on_down();
+        }
+
+        assert_eq!(app.source_sidebar_selected_index, 19);
+        app.on_down();
+        assert_eq!(app.source_sidebar_selected_index, 19);
     }
 
     // ==================== Page scrolling tests ====================
