@@ -264,10 +264,22 @@ pub fn draw(f: &mut Frame, app: &App) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Cyan)),
                 );
-                f.render_widget(meta_para, detail_chunks[0]);
+                f.render_widget(
+                    meta_para.scroll((app.detail_scroll.min(u16::MAX as usize) as u16, 0)),
+                    detail_chunks[0],
+                );
 
+                let payload = log.payload_raw();
+                let total_rows = payload.len().div_ceil(16);
+                let visible_rows = detail_chunks[1].height.saturating_sub(2) as usize;
+                let start_row = app
+                    .detail_scroll
+                    .min(total_rows.saturating_sub(visible_rows));
+                let end_row = (start_row + visible_rows).min(total_rows);
                 let mut hex_lines = String::new();
-                for chunk in log.payload_raw().chunks(16) {
+                for row in start_row..end_row {
+                    let start_byte = row * 16;
+                    let chunk = &payload[start_byte..(start_byte + 16).min(payload.len())];
                     let hex_parts: Vec<String> =
                         chunk.iter().map(|b| format!("{:02X}", b)).collect();
                     let char_parts: String = chunk
@@ -286,14 +298,19 @@ pub fn draw(f: &mut Frame, app: &App) {
                         hex_padded.push(' ');
                     }
 
-                    hex_lines.push_str(&format!("{}  |{}\n", hex_padded, char_parts));
+                    hex_lines.push_str(&format!(
+                        "{:08X}  {}  |{}\n",
+                        start_byte, hex_padded, char_parts
+                    ));
                 }
 
                 let hex_para = Paragraph::new(hex_lines).block(
                     Block::default()
                         .title(format!(
-                            "Payload Hex Dump ({} bytes)",
-                            log.payload_raw().len()
+                            "Payload Hex Dump ({} bytes, rows {}-{})",
+                            payload.len(),
+                            if end_row == 0 { 0 } else { start_row + 1 },
+                            end_row
                         ))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Magenta)),
@@ -723,6 +740,28 @@ mod tests {
             text.contains("GPS fix acquired"),
             "Should show payload text"
         );
+    }
+
+    #[test]
+    fn test_log_detail_renders_only_scrolled_hex_rows() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogDetail;
+        app.logs.push(LogEntry::new(
+            DltMessage::new(1, "ECU1".to_string(), None, None, None, vec![b'A'; 4096]),
+            None,
+            0,
+        ));
+        app.apply_filter();
+        app.detail_scroll = 20;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("00000140"), "{text}");
+        assert!(!text.contains("00000000"), "{text}");
+        assert!(text.contains("rows 21-"), "{text}");
     }
 
     #[test]

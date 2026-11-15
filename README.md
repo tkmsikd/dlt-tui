@@ -117,7 +117,7 @@ When Sources or Contexts has focus, `j`/`k` navigates the complete ranked list, 
 | `j` / `k`   | Navigate between log entries |
 | `q` / `Esc` | Back to Log Viewer           |
 
-Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In any filter input, `Enter` applies and `Esc` cancels the input — an already-active filter stays as it was.
+In the detail view, `j`/`k` changes logs and PageUp/PageDown scrolls the detail text and hex rows. `g`/`G` jumps to the first/last log. In any filter input, `Enter` applies and `Esc` cancels the input — an already-active filter stays as it was.
 
 ## Notes
 

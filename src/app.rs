@@ -131,6 +131,7 @@ pub struct App {
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
     pub horizontal_scroll: usize,
+    pub detail_scroll: usize,
     pub show_time_delta: bool,
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
@@ -175,6 +176,7 @@ impl App {
             connection_info: None,
             auto_scroll: false,
             horizontal_scroll: 0,
+            detail_scroll: 0,
             show_time_delta: false,
             skipped_bytes: 0,
             skipped_bytes_shared: None,
@@ -724,9 +726,15 @@ impl App {
                     self.explorer_selected_index -= 1;
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if self.logs_selected_index > 0 {
                     self.logs_selected_index -= 1;
+                }
+            }
+            AppScreen::LogDetail => {
+                if self.logs_selected_index > 0 {
+                    self.logs_selected_index -= 1;
+                    self.detail_scroll = 0;
                 }
             }
         }
@@ -760,11 +768,19 @@ impl App {
                     self.explorer_selected_index += 1;
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if !self.filtered_log_indices.is_empty()
                     && self.logs_selected_index < self.filtered_log_indices.len() - 1
                 {
                     self.logs_selected_index += 1;
+                }
+            }
+            AppScreen::LogDetail => {
+                if !self.filtered_log_indices.is_empty()
+                    && self.logs_selected_index < self.filtered_log_indices.len() - 1
+                {
+                    self.logs_selected_index += 1;
+                    self.detail_scroll = 0;
                 }
             }
         }
@@ -840,11 +856,14 @@ impl App {
                         (self.explorer_selected_index + page_size).min(max);
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if !self.filtered_log_indices.is_empty() {
                     let max = self.filtered_log_indices.len() - 1;
                     self.logs_selected_index = (self.logs_selected_index + page_size).min(max);
                 }
+            }
+            AppScreen::LogDetail => {
+                self.detail_scroll = self.detail_scroll.saturating_add(page_size);
             }
         }
     }
@@ -859,8 +878,11 @@ impl App {
                 self.explorer_selected_index =
                     self.explorer_selected_index.saturating_sub(page_size);
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 self.logs_selected_index = self.logs_selected_index.saturating_sub(page_size);
+            }
+            AppScreen::LogDetail => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(page_size);
             }
         }
     }
@@ -1098,6 +1120,7 @@ impl App {
                         self.select_sidebar_filter();
                     } else if !self.filtered_log_indices.is_empty() {
                         self.screen = AppScreen::LogDetail;
+                        self.detail_scroll = 0;
                     }
                 }
             }
@@ -1979,6 +2002,20 @@ mod tests {
 
         app.on_left(10);
         assert_eq!(app.horizontal_scroll, 0, "Should clamp at 0");
+    }
+
+    #[test]
+    fn test_detail_page_keys_scroll_content_and_reset_on_log_change() {
+        let mut app = build_mock_app_with_logs(3);
+        app.screen = AppScreen::LogDetail;
+
+        app.on_page_down(5);
+        assert_eq!(app.detail_scroll, 5);
+        app.on_page_up(2);
+        assert_eq!(app.detail_scroll, 3);
+        app.on_down();
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(app.detail_scroll, 0);
     }
 
     // ==================== Bug verification tests ====================

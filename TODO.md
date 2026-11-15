@@ -51,7 +51,7 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 10. Scroll large log details
 
-- [ ] Add detail-pane scrolling and generate only the visible hex dump rows.
+- [x] Add detail scrolling and generate only the visible hex dump rows.
 
 ## 11. Distinguish timestamp domains
 
