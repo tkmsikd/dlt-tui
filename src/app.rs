@@ -541,14 +541,22 @@ impl App {
         }
     }
 
-    fn log_sort_key(logs: &[LogEntry], idx: usize) -> (bool, u64, usize, usize) {
+    fn log_sort_key(logs: &[LogEntry], idx: usize) -> (u8, u64, usize, usize) {
         let entry = &logs[idx];
-        (
-            entry.message.timestamp_us == 0,
-            entry.message.timestamp_us,
-            entry.source_index,
-            idx,
-        )
+        match entry.message.timestamp_domain {
+            crate::parser::TimestampDomain::StorageAbsolute
+            | crate::parser::TimestampDomain::Unspecified
+                if entry.message.timestamp_us != 0 =>
+            {
+                (0, entry.message.timestamp_us, entry.source_index, idx)
+            }
+            crate::parser::TimestampDomain::DaemonRelative => {
+                (1, entry.source_index as u64, idx, idx)
+            }
+            crate::parser::TimestampDomain::StorageAbsolute => (0, 0, entry.source_index, idx),
+            crate::parser::TimestampDomain::Missing
+            | crate::parser::TimestampDomain::Unspecified => (2, 0, entry.source_index, idx),
+        }
     }
 
     fn increment_sidebar_counts(&mut self, idx: usize) {
@@ -1439,6 +1447,31 @@ mod tests {
             .map(|&idx| app.logs[idx].message.payload_text())
             .collect();
         assert_eq!(ordered_payloads, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn test_merge_orders_timestamp_domains_without_reordering_restarts() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        let mut relative_late = mock_entry(900_000, "relative late", None, 1);
+        relative_late.message.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut absolute_late = mock_entry(200, "absolute late", None, 0);
+        absolute_late.message.timestamp_domain = TimestampDomain::StorageAbsolute;
+        let mut relative_restart = mock_entry(10, "relative restart", None, 1);
+        relative_restart.message.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut absolute_early = mock_entry(100, "absolute early", None, 0);
+        absolute_early.message.timestamp_domain = TimestampDomain::StorageAbsolute;
+        app.logs = vec![
+            relative_late,
+            absolute_late,
+            relative_restart,
+            absolute_early,
+        ];
+
+        app.apply_filter();
+
+        assert_eq!(app.filtered_log_indices, vec![3, 1, 0, 2]);
     }
 
     #[test]

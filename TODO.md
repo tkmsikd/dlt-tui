@@ -55,8 +55,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 11. Distinguish timestamp domains
 
-- [ ] Preserve whether timestamps are storage absolute time or daemon-relative ticks.
-- [ ] Define ordering and display behavior for mixed domains, restarts, and wraparound.
+- [x] Preserve storage-absolute, daemon-relative, missing, and unspecified timestamp domains.
+- [x] Order absolute timestamps chronologically; preserve source order for relative clocks; show mixed-domain deltas as N/A and treat large backward ticks as wrap, smaller resets as restarts.
 
 ## 12. Avoid misreading unsupported verbose argument types
 

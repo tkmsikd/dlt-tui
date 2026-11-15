@@ -17,6 +17,62 @@ pub fn format_timestamp(us: u64) -> String {
     format!("{:02}:{:02}:{:02}.{:06}", hours, minutes, seconds, micros)
 }
 
+pub fn format_message_timestamp(message: &crate::parser::DltMessage) -> String {
+    use crate::parser::TimestampDomain;
+
+    match message.timestamp_domain {
+        TimestampDomain::StorageAbsolute => format_timestamp(message.timestamp_us),
+        TimestampDomain::DaemonRelative => format!("T+{} ticks", message.timestamp_us / 100),
+        TimestampDomain::Missing => "N/A".to_string(),
+        TimestampDomain::Unspecified if message.timestamp_us == 0 => "N/A".to_string(),
+        TimestampDomain::Unspecified => format_timestamp(message.timestamp_us),
+    }
+}
+
+fn format_delta_time(
+    current: &crate::parser::DltMessage,
+    previous: Option<&crate::parser::DltMessage>,
+    same_source: bool,
+) -> String {
+    use crate::parser::TimestampDomain;
+
+    let Some(previous) = previous else {
+        return if matches!(current.timestamp_domain, TimestampDomain::Missing)
+            || (current.timestamp_domain == TimestampDomain::Unspecified
+                && current.timestamp_us == 0)
+        {
+            "N/A".to_string()
+        } else {
+            "+0.000000s".to_string()
+        };
+    };
+    if current.timestamp_domain != previous.timestamp_domain {
+        return "N/A".to_string();
+    }
+
+    let delta = match current.timestamp_domain {
+        TimestampDomain::Missing => None,
+        TimestampDomain::DaemonRelative if same_source => {
+            if current.timestamp_us >= previous.timestamp_us {
+                Some(current.timestamp_us - previous.timestamp_us)
+            } else {
+                const WRAP_PERIOD_US: u64 = (u32::MAX as u64 + 1) * 100;
+                let backwards = previous.timestamp_us - current.timestamp_us;
+                (backwards > WRAP_PERIOD_US / 2)
+                    .then_some(WRAP_PERIOD_US - previous.timestamp_us + current.timestamp_us)
+            }
+        }
+        TimestampDomain::DaemonRelative => None,
+        TimestampDomain::StorageAbsolute | TimestampDomain::Unspecified => {
+            Some(current.timestamp_us.abs_diff(previous.timestamp_us))
+        }
+    };
+    match delta {
+        Some(delta) => format!("+{}.{:06}s", delta / 1_000_000, delta % 1_000_000),
+        None => "N/A".to_string(),
+    }
+}
+
 fn ctx_color(ctx: &str) -> Color {
     const PALETTE: [Color; 12] = [
         Color::Cyan,
@@ -157,37 +213,21 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 let time_str = if app.show_time_delta {
-                    if i == 0 {
-                        // BUG-3: if timestamp is 0 (no storage header), show N/A
-                        if log.timestamp_us == 0 {
-                            "N/A".to_string()
-                        } else {
-                            "+0.000000s".to_string()
-                        }
-                    } else {
-                        let prev_idx = app.filtered_log_indices[i - 1];
-                        let prev_log = &app.logs[prev_idx].message;
-                        // BUG-3: if either timestamp is 0, delta is meaningless
-                        if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
-                            "N/A".to_string()
-                        } else {
-                            let is_negative = log.timestamp_us < prev_log.timestamp_us;
-                            let diff_abs = if is_negative {
-                                prev_log.timestamp_us - log.timestamp_us
-                            } else {
-                                log.timestamp_us - prev_log.timestamp_us
-                            };
-                            let sign = if is_negative { "-" } else { "+" };
-                            format!(
-                                "{}{}.{:06}s",
-                                sign,
-                                diff_abs / 1_000_000,
-                                diff_abs % 1_000_000
-                            )
-                        }
-                    }
+                    let previous = i.checked_sub(1).map(|previous_i| {
+                        let previous_idx = app.filtered_log_indices[previous_i];
+                        let previous_entry = &app.logs[previous_idx];
+                        (
+                            &previous_entry.message,
+                            previous_entry.source_index == entry.source_index,
+                        )
+                    });
+                    format_delta_time(
+                        log,
+                        previous.as_ref().map(|(message, _)| *message),
+                        previous.is_some_and(|(_, same_source)| same_source),
+                    )
                 } else {
-                    format_timestamp(log.timestamp_us)
+                    format_message_timestamp(log)
                 };
 
                 let cells = vec![
@@ -247,9 +287,10 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .split(chunks[0]);
 
                 let meta_text = format!(
-                    "Timestamp: {} ({} μs)\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nSource: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
-                    format_timestamp(log.timestamp_us),
+                    "Timestamp: {} ({} μs, {:?})\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nSource: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    format_message_timestamp(log),
                     log.timestamp_us,
+                    log.timestamp_domain,
                     log.ecu_id,
                     log.apid.as_deref().unwrap_or("-"),
                     log.ctid.as_deref().unwrap_or("-"),
@@ -660,6 +701,30 @@ mod tests {
         assert_eq!(visible_log_range(100, 9, 10), 0..10);
         assert_eq!(visible_log_range(100, 10, 10), 1..11);
         assert_eq!(visible_log_range(100, 99, 10), 90..100);
+    }
+
+    #[test]
+    fn test_timestamp_formatting_and_deltas_respect_clock_domains() {
+        use crate::parser::TimestampDomain;
+
+        let mut relative = DltMessage::new(12_300, "ECU1".into(), None, None, None, vec![]);
+        relative.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_eq!(format_message_timestamp(&relative), "T+123 ticks");
+
+        let mut absolute = DltMessage::new(10_000, "ECU1".into(), None, None, None, vec![]);
+        absolute.timestamp_domain = TimestampDomain::StorageAbsolute;
+        assert_eq!(format_delta_time(&relative, Some(&absolute), true), "N/A");
+
+        let previous_wrap = u64::from(u32::MAX - 10) * 100;
+        let mut previous = DltMessage::new(previous_wrap, "ECU1".into(), None, None, None, vec![]);
+        previous.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut wrapped = DltMessage::new(1_200, "ECU1".into(), None, None, None, vec![]);
+        wrapped.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_ne!(format_delta_time(&wrapped, Some(&previous), true), "N/A");
+
+        let mut restarted = DltMessage::new(1_000, "ECU1".into(), None, None, None, vec![]);
+        restarted.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_eq!(format_delta_time(&restarted, Some(&relative), true), "N/A");
     }
 
     #[test]

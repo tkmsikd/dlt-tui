@@ -12,6 +12,14 @@ pub enum LogLevel {
     Unknown(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestampDomain {
+    StorageAbsolute,
+    DaemonRelative,
+    Missing,
+    Unspecified,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PayloadTextFormat {
     Plain,
@@ -21,6 +29,7 @@ enum PayloadTextFormat {
 #[derive(Debug, Clone)]
 pub struct DltMessage {
     pub timestamp_us: u64,
+    pub timestamp_domain: TimestampDomain,
     pub ecu_id: String,
     pub apid: Option<String>,
     pub ctid: Option<String>,
@@ -41,6 +50,7 @@ impl DltMessage {
     ) -> Self {
         Self {
             timestamp_us,
+            timestamp_domain: TimestampDomain::Unspecified,
             ecu_id,
             apid,
             ctid,
@@ -53,6 +63,11 @@ impl DltMessage {
 
     fn with_verbose_payload(mut self, noar: u8, msbf: bool) -> Self {
         self.payload_text_format = PayloadTextFormat::Verbose { noar, msbf };
+        self
+    }
+
+    fn with_timestamp_domain(mut self, domain: TimestampDomain) -> Self {
+        self.timestamp_domain = domain;
         self
     }
 
@@ -87,6 +102,7 @@ impl DltMessage {
 impl PartialEq for DltMessage {
     fn eq(&self, other: &Self) -> bool {
         self.timestamp_us == other.timestamp_us
+            && self.timestamp_domain == other.timestamp_domain
             && self.ecu_id == other.ecu_id
             && self.apid == other.apid
             && self.ctid == other.ctid
@@ -377,6 +393,11 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     // 1. Storage Header (16 bytes: "DLT\x01" + timestamp_sec(4 LE) + timestamp_us(4 LE) + ecu_id(4))
     //    If not present, fall back to parsing as a raw standard header (for TCP streams).
     let has_storage_header = input.starts_with(b"DLT\x01");
+    let mut timestamp_domain = if has_storage_header {
+        TimestampDomain::StorageAbsolute
+    } else {
+        TimestampDomain::Missing
+    };
     let (input, mut timestamp_us, storage_ecu_id) = if has_storage_header {
         match parse_storage_header(input) {
             Ok((remaining, (ts, ecu))) => (remaining, ts, ecu),
@@ -477,6 +498,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         if !has_storage_header {
             let ticks = u32::from_be_bytes([tms[0], tms[1], tms[2], tms[3]]);
             timestamp_us = u64::from(ticks) * 100;
+            timestamp_domain = TimestampDomain::DaemonRelative;
         }
         consumed_extra += 4;
     }
@@ -548,7 +570,8 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         msg_ctid,
         msg_log_level,
         payload_bytes.to_vec(),
-    );
+    )
+    .with_timestamp_domain(timestamp_domain);
     if is_verbose && noar > 0 {
         message = message.with_verbose_payload(noar, msbf);
     }
@@ -775,6 +798,7 @@ mod tests {
         assert_eq!(msg.apid, Some("APP1".to_string()));
         assert_eq!(msg.ctid, Some("CTX1".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
+        assert_eq!(msg.timestamp_domain, TimestampDomain::StorageAbsolute);
         assert_eq!(msg.payload_text(), "Hello DLT");
         assert!(msg.payload_text_is_initialized());
 
@@ -1353,6 +1377,7 @@ mod tests {
             parsed.timestamp_us, 0,
             "No timestamp without storage header"
         );
+        assert_eq!(parsed.timestamp_domain, TimestampDomain::Missing);
         assert_eq!(
             parsed.ecu_id, "",
             "No ECU ID without storage header or WEID"
@@ -1409,6 +1434,7 @@ mod tests {
 
         assert!(remaining.is_empty());
         assert_eq!(parsed.timestamp_us, 123_456_700);
+        assert_eq!(parsed.timestamp_domain, TimestampDomain::DaemonRelative);
         assert_eq!(parsed.payload_text(), "Hello");
     }
 }

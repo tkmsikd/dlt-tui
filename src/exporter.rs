@@ -1,5 +1,5 @@
 use crate::parser::DltMessage;
-use crate::ui::format_timestamp;
+use crate::ui::format_message_timestamp;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -37,7 +37,7 @@ impl TextWriter {
         writeln!(
             self.file,
             "{} [{}] [{}] [{}] [{}] {}",
-            format_timestamp(log.timestamp_us),
+            format_message_timestamp(log),
             log.ecu_id,
             log.apid.as_deref().unwrap_or("-"),
             log.ctid.as_deref().unwrap_or("-"),
