@@ -45,6 +45,23 @@ pub struct LogEntry {
     pub source_index: usize,
 }
 
+struct ExportJob {
+    path: PathBuf,
+    indices: Vec<usize>,
+    cursor: usize,
+    writer: Option<crate::exporter::TextWriter>,
+    completed: bool,
+}
+
+impl Drop for ExportJob {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.writer.take();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 impl LogEntry {
     pub fn new(message: DltMessage, source_file: Option<PathBuf>, source_index: usize) -> Self {
         Self {
@@ -105,6 +122,7 @@ pub struct App {
     filter_generation: u64,
     text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
     filter_scan_cursor: Option<usize>,
+    export_job: Option<ExportJob>,
 }
 
 impl Default for App {
@@ -143,6 +161,7 @@ impl App {
             filter_generation: 0,
             text_regex_cache: None,
             filter_scan_cursor: None,
+            export_job: None,
         }
     }
 
@@ -235,6 +254,7 @@ impl App {
     }
 
     pub fn load_files(&mut self, paths: Vec<PathBuf>) -> std::io::Result<()> {
+        self.cancel_export();
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
@@ -649,6 +669,7 @@ impl App {
         if self.filter_scan_cursor.is_some() {
             self.process_filter_chunk(MAX_LOGS_PER_TICK);
         }
+        self.process_export_chunk();
     }
 
     pub fn on_up(&mut self) {
@@ -971,6 +992,7 @@ impl App {
     }
 
     pub fn connect_tcp(&mut self, addr: &str) {
+        self.cancel_export();
         self.logs.clear();
         self.filtered_log_indices.clear();
         self.source_count_cache.clear();
@@ -980,6 +1002,7 @@ impl App {
         self.info_message = None;
         self.file_errors = None;
         self.load_filter_config();
+        self.begin_filter();
         self.is_loading = true;
         self.auto_scroll = true;
         self.horizontal_scroll = 0;
@@ -1013,6 +1036,10 @@ impl App {
     }
 
     pub fn on_export(&mut self) {
+        if self.export_job.is_some() {
+            self.info_message = Some("An export is already in progress".to_string());
+            return;
+        }
         if self.filtered_log_indices.is_empty() {
             self.error_message = Some("No logs to export".to_string());
             return;
@@ -1021,42 +1048,90 @@ impl App {
         let now = chrono::Local::now();
         let base = format!("dlt_export_{}", now.format("%Y%m%d_%H%M%S"));
 
-        // SEC-2: avoid overwriting existing files by appending a suffix
-        let filename = if !std::path::Path::new(&format!("{}.txt", base)).exists() {
-            format!("{}.txt", base)
-        } else {
-            let mut i = 1;
-            loop {
-                let candidate = format!("{}_{}.txt", base, i);
-                if !std::path::Path::new(&candidate).exists() {
-                    break candidate;
+        for suffix in 0..=999 {
+            let filename = if suffix == 0 {
+                format!("{base}.txt")
+            } else {
+                format!("{base}_{suffix}.txt")
+            };
+            let path = PathBuf::from(&filename);
+            match crate::exporter::TextWriter::create_new(&path) {
+                Ok(writer) => {
+                    let count = self.filtered_log_indices.len();
+                    self.export_job = Some(ExportJob {
+                        path,
+                        indices: self.filtered_log_indices.clone(),
+                        cursor: 0,
+                        writer: Some(writer),
+                        completed: false,
+                    });
+                    self.info_message = Some(format!("Exporting {count} logs to {filename}..."));
+                    return;
                 }
-                i += 1;
-                if i > 999 {
-                    self.error_message = Some("Too many export files".to_string());
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    self.error_message = Some(format!("Export failed: {error}"));
                     return;
                 }
             }
+        }
+
+        self.error_message = Some("Too many export files".to_string());
+    }
+
+    fn cancel_export(&mut self) {
+        if self.export_job.take().is_some() {
+            self.info_message = Some("Export cancelled because the log set changed".to_string());
+        }
+    }
+
+    fn process_export_chunk(&mut self) {
+        let Some(mut job) = self.export_job.take() else {
+            return;
         };
-
-        // Collect references to the currently filtered DltMessages
-        let filtered_logs: Vec<&crate::parser::DltMessage> = self
-            .filtered_log_indices
-            .iter()
-            .map(|&i| &self.logs[i].message)
-            .collect();
-
-        match crate::exporter::export_to_txt(&filtered_logs, &filename) {
-            Ok(_) => {
-                self.info_message = Some(format!(
-                    "Exported {} logs to {}",
-                    filtered_logs.len(),
-                    filename
-                ));
+        let end = job
+            .cursor
+            .saturating_add(MAX_LOGS_PER_TICK)
+            .min(job.indices.len());
+        for &index in &job.indices[job.cursor..end] {
+            let Some(entry) = self.logs.get(index) else {
+                self.error_message = Some("Export cancelled: log data changed".to_string());
+                return;
+            };
+            if let Err(error) = job
+                .writer
+                .as_mut()
+                .expect("active export has a writer")
+                .write_message(&entry.message)
+            {
+                self.error_message = Some(format!("Export failed: {error}"));
+                return;
             }
-            Err(e) => {
-                self.error_message = Some(format!("Export failed: {}", e));
+        }
+        job.cursor = end;
+
+        if end == job.indices.len() {
+            let count = job.indices.len();
+            let filename = job.path.display().to_string();
+            match job
+                .writer
+                .take()
+                .expect("active export has a writer")
+                .finish()
+            {
+                Ok(()) => {
+                    job.completed = true;
+                    self.info_message = Some(format!("Exported {count} logs to {filename}"));
+                }
+                Err(error) => self.error_message = Some(format!("Export failed: {error}")),
             }
+        } else {
+            self.info_message = Some(format!(
+                "Exporting {} of {} logs...",
+                end,
+                job.indices.len()
+            ));
+            self.export_job = Some(job);
         }
     }
 }
@@ -2086,6 +2161,37 @@ mod tests {
         app.on_tick();
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2 + 1);
         assert!(app.filter_scan_cursor.is_none());
+    }
+
+    #[test]
+    fn test_export_writes_logs_incrementally_and_finishes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("export.txt");
+        let mut app = App::new();
+        for i in 0..(MAX_LOGS_PER_TICK + 1) {
+            app.logs.push(mock_entry(i as u64, "exported", None, 0));
+        }
+        let indices: Vec<usize> = (0..app.logs.len()).collect();
+        let writer = crate::exporter::TextWriter::create_new(&path).unwrap();
+        app.export_job = Some(ExportJob {
+            path: path.clone(),
+            indices,
+            cursor: 0,
+            writer: Some(writer),
+            completed: false,
+        });
+
+        app.on_tick();
+        assert_eq!(app.export_job.as_ref().unwrap().cursor, MAX_LOGS_PER_TICK);
+        assert!(!app.info_message.as_deref().unwrap().starts_with("Exported"));
+
+        app.on_tick();
+        assert!(app.export_job.is_none());
+        assert!(app.info_message.as_deref().unwrap().starts_with("Exported"));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap().lines().count(),
+            MAX_LOGS_PER_TICK + 2
+        );
     }
 
     #[test]
