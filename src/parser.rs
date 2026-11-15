@@ -213,14 +213,14 @@ fn read_i64_at(data: &[u8], pos: usize, byte_len: usize, msbf: bool) -> i64 {
     }
 }
 
-fn tyle_to_byte_len(tyle: u32) -> usize {
+fn tyle_to_byte_len(tyle: u32) -> Option<usize> {
     match tyle {
-        1 => 1,
-        2 => 2,
-        3 => 4,
-        4 => 8,
-        5 => 16,
-        _ => 4,
+        1 => Some(1),
+        2 => Some(2),
+        3 => Some(4),
+        4 => Some(8),
+        5 => Some(16),
+        _ => None,
     }
 }
 
@@ -247,6 +247,20 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
         let is_strg = (type_info >> 9) & 1 == 1;
         let is_rawd = (type_info >> 10) & 1 == 1;
         let is_vari = (type_info >> 11) & 1 == 1;
+
+        let supported = match (is_bool, is_sint, is_uint, is_float, is_strg, is_rawd) {
+            (true, false, false, false, false, false) => tyle == 1,
+            (false, true, false, false, false, false) => (1..=4).contains(&tyle),
+            (false, false, true, false, false, false) => (1..=5).contains(&tyle),
+            (false, false, false, true, false, false) => matches!(tyle, 3 | 4),
+            (false, false, false, false, true, false)
+            | (false, false, false, false, false, true) => tyle == 0,
+            _ => false,
+        };
+        if !supported {
+            parts.push(format!("<unsupported TYLE={tyle} type>"));
+            break;
+        }
 
         // Skip VARI (variable info: name + optional unit) — bounds-checked.
         // Numeric arguments encode both lengths before either string:
@@ -307,7 +321,7 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(if payload[pos] != 0 { "true" } else { "false" }.to_string());
             pos += 1;
         } else if is_uint {
-            let byte_len = tyle_to_byte_len(tyle);
+            let byte_len = tyle_to_byte_len(tyle).expect("validated UINT TYLE");
             if pos + byte_len > payload.len() {
                 break;
             }
@@ -325,7 +339,7 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(val.to_string());
             pos += byte_len;
         } else if is_sint {
-            let byte_len = tyle_to_byte_len(tyle).min(8); // sint has no 128-bit
+            let byte_len = tyle_to_byte_len(tyle).expect("validated SINT TYLE");
             if pos + byte_len > payload.len() {
                 break;
             }
@@ -836,6 +850,22 @@ mod tests {
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(msg.payload_text(), "42");
+    }
+
+    #[test]
+    fn test_verbose_decoder_stops_at_unsupported_tyle_without_shifting() {
+        for type_info in [0x0000_0040u32, 0x0000_0082, 0x0000_0063] {
+            let mut payload = type_info.to_le_bytes().to_vec();
+            payload.extend_from_slice(&[0x01; 16]);
+            payload.extend(build_verbose_string_arg("must not be decoded"));
+
+            let data = build_verbose_message(&payload);
+            let (_, message) = parse_dlt_message(&data).expect("Parsing failed");
+            assert_eq!(
+                message.payload_text(),
+                format!("<unsupported TYLE={} type>", type_info & 0x0f)
+            );
+        }
     }
 
     #[test]

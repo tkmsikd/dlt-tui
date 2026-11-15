@@ -60,5 +60,5 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 12. Avoid misreading unsupported verbose argument types
 
-- [ ] Validate TYLE and supported widths before consuming argument bytes.
-- [ ] Stop decoding or label unsupported types without shifting subsequent arguments.
+- [x] Validate type flags and TYLE widths before consuming argument bytes.
+- [x] Stop with an explicit unsupported-type marker without shifting later arguments.
