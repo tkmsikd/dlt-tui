@@ -54,6 +54,7 @@ pub struct LogEntry {
     pub message: DltMessage,
     pub source_file: Option<Arc<PathBuf>>,
     pub source_index: usize,
+    pub daemon_epoch: u64,
 }
 
 struct ExportJob {
@@ -79,6 +80,7 @@ impl LogEntry {
             message,
             source_file: source_file.map(Arc::new),
             source_index,
+            daemon_epoch: 0,
         }
     }
 
@@ -91,6 +93,7 @@ impl LogEntry {
             message,
             source_file,
             source_index,
+            daemon_epoch: 0,
         }
     }
 
@@ -149,6 +152,7 @@ pub struct App {
     text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
     filter_scan_cursor: Option<usize>,
     export_job: Option<ExportJob>,
+    daemon_clock_state: BTreeMap<usize, (u64, u64)>,
 }
 
 impl Default for App {
@@ -196,6 +200,7 @@ impl App {
             text_regex_cache: None,
             filter_scan_cursor: None,
             export_job: None,
+            daemon_clock_state: BTreeMap::new(),
         }
     }
 
@@ -290,6 +295,7 @@ impl App {
     pub fn load_files(&mut self, paths: Vec<PathBuf>) -> std::io::Result<()> {
         self.cancel_export();
         self.logs.clear();
+        self.daemon_clock_state.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
         self.error_message = None;
@@ -499,6 +505,27 @@ impl App {
         if self.auto_scroll && !self.filtered_log_indices.is_empty() {
             self.logs_selected_index = self.filtered_log_indices.len() - 1;
         }
+    }
+
+    fn record_daemon_epoch(
+        state_by_source: &mut BTreeMap<usize, (u64, u64)>,
+        entry: &mut LogEntry,
+    ) {
+        if entry.message.timestamp_domain != crate::parser::TimestampDomain::DaemonRelative {
+            return;
+        }
+        const WRAP_PERIOD_US: u64 = (u32::MAX as u64 + 1) * 100;
+        let state = state_by_source
+            .entry(entry.source_index)
+            .or_insert((entry.message.timestamp_us, 0));
+        let previous = state.0;
+        if entry.message.timestamp_us < previous
+            && previous - entry.message.timestamp_us <= WRAP_PERIOD_US / 2
+        {
+            state.1 = state.1.saturating_add(1);
+        }
+        state.0 = entry.message.timestamp_us;
+        entry.daemon_epoch = state.1;
     }
 
     #[cfg(test)]
@@ -725,7 +752,8 @@ impl App {
 
             for _ in 0..MAX_LOGS_PER_TICK {
                 match rx.try_recv() {
-                    Ok(msg) => {
+                    Ok(mut msg) => {
+                        Self::record_daemon_epoch(&mut self.daemon_clock_state, &mut msg);
                         self.logs.push(msg);
                         added = true;
                     }
@@ -1253,6 +1281,7 @@ impl App {
     pub fn connect_tcp(&mut self, addr: &str) {
         self.cancel_export();
         self.logs.clear();
+        self.daemon_clock_state.clear();
         self.filtered_log_indices.clear();
         self.source_count_cache.clear();
         self.ctx_count_cache.clear();
@@ -1781,6 +1810,7 @@ mod tests {
 
         app.sidebar_focus = SidebarFocus::Contexts;
         app.ctx_sidebar_selected_index = 0;
+        app.remember_sidebar_selection();
         app.select_sidebar_filter();
         app.apply_filter();
         assert_eq!(app.filtered_log_indices.len(), 1);
@@ -1790,6 +1820,7 @@ mod tests {
         app.apply_filter();
         app.sidebar_focus = SidebarFocus::Contexts;
         app.ctx_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
         app.select_sidebar_filter();
         app.apply_filter();
         assert_eq!(app.filtered_log_indices.len(), 1);
@@ -2617,6 +2648,41 @@ mod tests {
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2 + 1);
         assert!(app.filter_scan_cursor.is_none());
         assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK * 2);
+    }
+
+    #[test]
+    fn test_daemon_restart_epoch_survives_filtering_out_boundary_log() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (timestamp, payload) in [
+            (100, "keep before"),
+            (200, "hide boundary"),
+            (5, "keep after"),
+        ] {
+            let mut entry = mock_entry(timestamp, payload, None, 0);
+            entry.message.timestamp_domain = TimestampDomain::DaemonRelative;
+            tx.send(entry).unwrap();
+        }
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.on_tick();
+
+        assert_eq!(
+            app.logs
+                .iter()
+                .map(|entry| entry.daemon_epoch)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1]
+        );
+        app.filter.text = Some("keep".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices, vec![0, 2]);
+        assert_ne!(
+            app.logs[app.filtered_log_indices[0]].daemon_epoch,
+            app.logs[app.filtered_log_indices[1]].daemon_epoch
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@ fn format_delta_time(
     current: &crate::parser::DltMessage,
     previous: Option<&crate::parser::DltMessage>,
     same_source: bool,
+    same_daemon_epoch: bool,
 ) -> String {
     use crate::parser::TimestampDomain;
 
@@ -52,7 +53,7 @@ fn format_delta_time(
 
     let delta = match current.timestamp_domain {
         TimestampDomain::Missing => None,
-        TimestampDomain::DaemonRelative if same_source => {
+        TimestampDomain::DaemonRelative if same_source && same_daemon_epoch => {
             if current.timestamp_us >= previous.timestamp_us {
                 Some(current.timestamp_us - previous.timestamp_us)
             } else {
@@ -219,12 +220,14 @@ pub fn draw(f: &mut Frame, app: &App) {
                         (
                             &previous_entry.message,
                             previous_entry.source_index == entry.source_index,
+                            previous_entry.daemon_epoch == entry.daemon_epoch,
                         )
                     });
                     format_delta_time(
                         log,
-                        previous.as_ref().map(|(message, _)| *message),
-                        previous.is_some_and(|(_, same_source)| same_source),
+                        previous.as_ref().map(|(message, _, _)| *message),
+                        previous.is_some_and(|(_, same_source, _)| same_source),
+                        previous.is_some_and(|(_, _, same_epoch)| same_epoch),
                     )
                 } else {
                     format_message_timestamp(log)
@@ -717,18 +720,27 @@ mod tests {
 
         let mut absolute = DltMessage::new(10_000, "ECU1".into(), None, None, None, vec![]);
         absolute.timestamp_domain = TimestampDomain::StorageAbsolute;
-        assert_eq!(format_delta_time(&relative, Some(&absolute), true), "N/A");
+        assert_eq!(
+            format_delta_time(&relative, Some(&absolute), true, true),
+            "N/A"
+        );
 
         let previous_wrap = u64::from(u32::MAX - 10) * 100;
         let mut previous = DltMessage::new(previous_wrap, "ECU1".into(), None, None, None, vec![]);
         previous.timestamp_domain = TimestampDomain::DaemonRelative;
         let mut wrapped = DltMessage::new(1_200, "ECU1".into(), None, None, None, vec![]);
         wrapped.timestamp_domain = TimestampDomain::DaemonRelative;
-        assert_ne!(format_delta_time(&wrapped, Some(&previous), true), "N/A");
+        assert_ne!(
+            format_delta_time(&wrapped, Some(&previous), true, true),
+            "N/A"
+        );
 
         let mut restarted = DltMessage::new(1_000, "ECU1".into(), None, None, None, vec![]);
         restarted.timestamp_domain = TimestampDomain::DaemonRelative;
-        assert_eq!(format_delta_time(&restarted, Some(&relative), true), "N/A");
+        assert_eq!(
+            format_delta_time(&restarted, Some(&relative), true, false),
+            "N/A"
+        );
     }
 
     #[test]
