@@ -461,13 +461,11 @@ impl App {
             self.filtered_log_indices.extend(merged);
         }
 
-        if let Some(selected_log) = selected_log
-            && let Some(position) = self
+        if let Some(selected_log) = selected_log {
+            let selected_key = Self::log_sort_key(logs, selected_log);
+            self.logs_selected_index = self
                 .filtered_log_indices
-                .iter()
-                .position(|&idx| idx == selected_log)
-        {
-            self.logs_selected_index = position;
+                .partition_point(|&idx| Self::log_sort_key(logs, idx) < selected_key);
         }
     }
 
@@ -1268,6 +1266,44 @@ mod tests {
         assert_eq!(
             app.selected_entry().unwrap().message.payload_text(),
             "selected"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual benchmark for large overlapping timestamp batches"]
+    fn benchmark_merge_filtered_indices_overlapping_ranges() {
+        use std::time::Instant;
+
+        const EXISTING: usize = 100_000;
+        const INCOMING: usize = 10_000;
+        const ITERATIONS: usize = 20;
+
+        let mut app = App::new();
+        app.logs.reserve(EXISTING + INCOMING);
+        for i in 0..EXISTING {
+            app.logs
+                .push(mock_entry((i * 2) as u64, "existing", None, 0));
+        }
+        for i in 0..INCOMING {
+            app.logs
+                .push(mock_entry((EXISTING + i * 2) as u64, "incoming", None, 1));
+        }
+        let base_indices: Vec<usize> = (0..EXISTING).collect();
+        let incoming: Vec<usize> = (EXISTING..EXISTING + INCOMING).collect();
+
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            app.filtered_log_indices.clone_from(&base_indices);
+            app.logs_selected_index = EXISTING / 2;
+            app.merge_filtered_indices(incoming.clone());
+            assert_eq!(app.filtered_log_indices.len(), EXISTING + INCOMING);
+        }
+        eprintln!(
+            "{} overlapping merges of {}+{} indices: {:?}",
+            ITERATIONS,
+            EXISTING,
+            INCOMING,
+            started.elapsed()
         );
     }
 

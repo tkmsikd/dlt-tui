@@ -20,8 +20,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 4. Measure and improve large multi-file merges
 
-- [ ] Benchmark overlapping timestamp ranges across large files.
-- [ ] Reduce repeated copying while preserving stable chronological order.
+- [x] Benchmark overlapping timestamp ranges across large files (20 x 100k+10k indices: 24.8ms before, 22.4ms after on this machine).
+- [x] Reduce repeated copying while preserving stable chronological order (binary-search selected row restoration).
 
 ## 5. Sanitize decoded verbose text
 
