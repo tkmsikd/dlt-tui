@@ -25,8 +25,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 5. Sanitize decoded verbose text
 
-- [ ] Apply the same display sanitization to decoded strings as raw payload text.
-- [ ] Cover terminal control characters in verbose values.
+- [x] Apply the same display sanitization to decoded strings as raw payload text.
+- [x] Cover terminal control characters in verbose values.
 
 ## 6. Make filter configuration writes durable
 

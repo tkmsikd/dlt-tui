@@ -67,7 +67,7 @@ impl DltMessage {
                     if decoded.is_empty() {
                         sanitize_payload_text(&self.payload_raw).into_boxed_str()
                     } else {
-                        decoded.into_boxed_str()
+                        sanitize_display_text(&decoded).into_boxed_str()
                     }
                 }
             })
@@ -354,8 +354,11 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
 
 /// Sanitize raw bytes into displayable text, replacing control chars with '.'
 fn sanitize_payload_text(payload_bytes: &[u8]) -> String {
-    String::from_utf8_lossy(payload_bytes)
-        .chars()
+    sanitize_display_text(&String::from_utf8_lossy(payload_bytes))
+}
+
+fn sanitize_display_text(text: &str) -> String {
+    text.chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
                 '.'
@@ -791,6 +794,15 @@ mod tests {
             "Daemon launched. Starting to output traces..."
         );
         assert_eq!(msg.log_level, Some(LogLevel::Info));
+    }
+
+    #[test]
+    fn test_verbose_string_replaces_terminal_control_characters() {
+        let payload = build_verbose_string_arg("before\x1b[31mafter\x07");
+        let data = build_verbose_message(&payload);
+
+        let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
+        assert_eq!(msg.payload_text(), "before.[31mafter.");
     }
 
     #[test]
