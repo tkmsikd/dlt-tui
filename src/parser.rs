@@ -600,19 +600,6 @@ pub(crate) fn find_next_complete_message(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Finds a complete storage-framed message using its strong magic marker.
-/// Streaming recovery uses this while more bytes may still arrive so a raw
-/// frame embedded in an incomplete payload is not mistaken for a boundary.
-pub(crate) fn find_next_complete_storage_message(data: &[u8]) -> Option<usize> {
-    data.windows(4).enumerate().find_map(|(index, window)| {
-        if window == b"DLT\x01" && parse_dlt_message(&data[index..]).is_ok() {
-            Some(index)
-        } else {
-            None
-        }
-    })
-}
-
 /// Parse all DLT messages from a byte buffer with error recovery.
 /// When a parse error occurs, scans ahead for the next valid sync marker
 /// instead of stopping. Returns the parsed messages and the count of bytes skipped.

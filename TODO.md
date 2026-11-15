@@ -10,8 +10,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 2. Keep valid TCP messages intact during recovery
 
-- [ ] Do not resynchronize to a storage header embedded in a valid incomplete raw frame.
-- [ ] Cover fragmented frames containing storage-framed payload bytes.
+- [x] Do not resynchronize to a storage header embedded in a valid incomplete raw frame.
+- [x] Cover fragmented frames containing storage-framed payload bytes.
 
 ## 3. Preserve the selected log while loading
 
