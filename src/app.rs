@@ -27,6 +27,8 @@ pub struct Filter {
     pub min_level: Option<crate::parser::LogLevel>,
     pub app_id: Option<String>,
     pub ctx_id: Option<String>,
+    #[serde(default)]
+    pub ctx_missing: bool,
     pub source: Option<String>,
     pub text: Option<String>,
 }
@@ -116,6 +118,7 @@ pub struct App {
     pub filtered_log_indices: Vec<usize>,
     source_count_cache: BTreeMap<String, usize>,
     ctx_count_cache: BTreeMap<String, usize>,
+    ctx_missing_count: usize,
     pub logs_selected_index: usize,
     pub sidebar_focus: SidebarFocus,
     pub source_sidebar_selected_index: usize,
@@ -161,6 +164,7 @@ impl App {
             filtered_log_indices: vec![],
             source_count_cache: BTreeMap::new(),
             ctx_count_cache: BTreeMap::new(),
+            ctx_missing_count: 0,
             logs_selected_index: 0,
             sidebar_focus: SidebarFocus::Logs,
             source_sidebar_selected_index: 0,
@@ -392,7 +396,12 @@ impl App {
             }
         }
 
-        if let Some(ref ctx_id) = filter.ctx_id {
+        if filter.ctx_missing && log.ctid.is_some() {
+            return false;
+        }
+        if !filter.ctx_missing
+            && let Some(ref ctx_id) = filter.ctx_id
+        {
             let matches = log
                 .ctid
                 .as_deref()
@@ -452,6 +461,7 @@ impl App {
         self.filtered_log_indices.clear();
         self.source_count_cache.clear();
         self.ctx_count_cache.clear();
+        self.ctx_missing_count = 0;
 
         self.filter_generation = self.filter_generation.wrapping_add(1);
         self.filter_scan_cursor = Some(0);
@@ -562,8 +572,11 @@ impl App {
     fn increment_sidebar_counts(&mut self, idx: usize) {
         let source = self.logs[idx].source_identity();
         Self::increment_count(&mut self.source_count_cache, &source);
-        let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
-        Self::increment_count(&mut self.ctx_count_cache, ctx);
+        if let Some(ctx) = self.logs[idx].message.ctid.as_deref() {
+            Self::increment_count(&mut self.ctx_count_cache, ctx);
+        } else {
+            self.ctx_missing_count += 1;
+        }
     }
 
     fn increment_count(counts: &mut BTreeMap<String, usize>, key: &str) {
@@ -580,6 +593,19 @@ impl App {
 
     pub fn ctx_counts(&self) -> &BTreeMap<String, usize> {
         &self.ctx_count_cache
+    }
+
+    pub(crate) fn ranked_ctx_entries(&self) -> Vec<(Option<String>, usize)> {
+        let mut entries: Vec<_> = self
+            .ctx_count_cache
+            .iter()
+            .map(|(ctx, count)| (Some(ctx.clone()), *count))
+            .collect();
+        if self.ctx_missing_count > 0 {
+            entries.push((None, self.ctx_missing_count));
+        }
+        entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
     }
 
     pub fn selected_entry(&self) -> Option<&LogEntry> {
@@ -762,7 +788,7 @@ impl App {
                     self.ctx_sidebar_selected_index = self
                         .ctx_sidebar_selected_index
                         .saturating_add(1)
-                        .min(self.ctx_count_cache.len().saturating_sub(1));
+                        .min(self.ranked_ctx_entries().len().saturating_sub(1));
                     return;
                 }
                 SidebarFocus::Logs => {}
@@ -810,10 +836,12 @@ impl App {
                 }
             }
             SidebarFocus::Contexts => {
-                if let Some(ctx) =
-                    Self::ranked_keys(&self.ctx_count_cache).get(self.ctx_sidebar_selected_index)
+                if let Some((ctx, _)) = self
+                    .ranked_ctx_entries()
+                    .get(self.ctx_sidebar_selected_index)
                 {
-                    self.filter.ctx_id = Some(ctx.clone());
+                    self.filter.ctx_id = ctx.clone();
+                    self.filter.ctx_missing = ctx.is_none();
                 }
             }
             SidebarFocus::Logs => return,
@@ -837,13 +865,15 @@ impl App {
                 SidebarFocus::Sources
             }
             SidebarFocus::Sources => {
-                if let Some(selected) = self.selected_entry()
-                    && let Some(ctx) = selected.message.ctid.as_deref()
-                    && let Some(position) = Self::ranked_keys(&self.ctx_count_cache)
+                if let Some(selected) = self.selected_entry() {
+                    let selected_ctx = selected.message.ctid.clone();
+                    if let Some(position) = self
+                        .ranked_ctx_entries()
                         .iter()
-                        .position(|key| key == ctx)
-                {
-                    self.ctx_sidebar_selected_index = position;
+                        .position(|(ctx, _)| *ctx == selected_ctx)
+                    {
+                        self.ctx_sidebar_selected_index = position;
+                    }
                 }
                 SidebarFocus::Contexts
             }
@@ -941,7 +971,10 @@ impl App {
                     match mode {
                         FilterInputMode::Text => self.filter.text = input,
                         FilterInputMode::AppId => self.filter.app_id = input,
-                        FilterInputMode::CtxId => self.filter.ctx_id = input,
+                        FilterInputMode::CtxId => {
+                            self.filter.ctx_id = input;
+                            self.filter.ctx_missing = false;
+                        }
                         FilterInputMode::MinLevel => {
                             let level = match self.filter_input.to_lowercase().as_str() {
                                 "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
@@ -1659,6 +1692,43 @@ mod tests {
     }
 
     #[test]
+    fn test_missing_context_filter_is_distinct_from_dash_context() {
+        let mut app = App::new();
+        let mut missing = mock_entry(1, "missing", None, 0);
+        missing.message.ctid = None;
+        let mut dash = mock_entry(2, "dash", None, 0);
+        dash.message.ctid = Some("-".to_string());
+        app.logs = vec![missing, dash];
+        app.screen = AppScreen::LogViewer;
+        app.apply_filter();
+
+        assert_eq!(app.ctx_missing_count, 1);
+        assert_eq!(app.ctx_counts().get("-"), Some(&1));
+
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 0;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert!(app.logs[app.filtered_log_indices[0]].message.ctid.is_none());
+
+        app.filter = Filter::default();
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 1;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert_eq!(
+            app.logs[app.filtered_log_indices[0]]
+                .message
+                .ctid
+                .as_deref(),
+            Some("-")
+        );
+    }
+
+    #[test]
     fn test_sidebar_navigation_reaches_entries_beyond_initial_view() {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
@@ -2367,7 +2437,7 @@ mod tests {
         assert_eq!(app.logs.len(), MAX_LOGS_PER_TICK);
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
         assert_eq!(app.source_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
-        assert_eq!(app.ctx_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
+        assert_eq!(app.ctx_missing_count, MAX_LOGS_PER_TICK);
         assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK - 1);
         assert!(app.log_receiver.is_some());
         assert!(app.is_loading);
@@ -2377,7 +2447,7 @@ mod tests {
         assert_eq!(app.logs.len(), total);
         assert_eq!(app.filtered_log_indices.len(), total);
         assert_eq!(app.source_counts().get("-"), Some(&total));
-        assert_eq!(app.ctx_counts().get("-"), Some(&total));
+        assert_eq!(app.ctx_missing_count, total);
         assert_eq!(app.logs_selected_index, total - 1);
         assert!(app.log_receiver.is_none());
         assert!(!app.is_loading);

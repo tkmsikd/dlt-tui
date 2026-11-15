@@ -474,8 +474,7 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let selected_source = app.selected_entry().map(|entry| entry.source_identity());
     let selected_ctx = app
         .selected_entry()
-        .and_then(|entry| entry.message.ctid.as_deref())
-        .unwrap_or("-");
+        .and_then(|entry| entry.message.ctid.clone());
 
     let source_capacity = sidebar_chunks[0].height.saturating_sub(2) as usize;
     let mut source_counts: Vec<_> = app.source_counts().iter().collect();
@@ -502,8 +501,7 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .collect();
 
     let ctx_capacity = sidebar_chunks[1].height.saturating_sub(2) as usize;
-    let mut ctx_counts: Vec<_> = app.ctx_counts().iter().collect();
-    ctx_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let ctx_counts = app.ranked_ctx_entries();
     let ctx_range = visible_sidebar_range(
         ctx_counts.len(),
         app.ctx_sidebar_selected_index,
@@ -515,14 +513,15 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .skip(ctx_range.start)
         .take(ctx_range.len())
         .map(|(index, (ctx, count))| {
+            let label = ctx.as_deref().unwrap_or("-");
             let selected = if app.sidebar_focus == SidebarFocus::Contexts {
                 index == app.ctx_sidebar_selected_index
             } else {
-                ctx.as_str() == selected_ctx
+                ctx == &selected_ctx
             };
             let marker = if selected { ">" } else { " " };
-            ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
-                .style(Style::default().fg(ctx_color(ctx)))
+            ListItem::new(format!("{} {:>5} {}", marker, count, label))
+                .style(Style::default().fg(ctx_color(label)))
         })
         .collect();
 
