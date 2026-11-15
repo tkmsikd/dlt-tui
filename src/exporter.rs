@@ -1,11 +1,12 @@
 use crate::parser::DltMessage;
 use crate::ui::format_timestamp;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 
 /// Exports a slice of DltMessage references to a text file.
 pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = BufWriter::new(file);
 
     // Write a simple header
     writeln!(file, "Timestamp, ECU, APP, CTX, Level, Payload")?;
