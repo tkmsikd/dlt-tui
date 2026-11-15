@@ -130,6 +130,7 @@ pub struct App {
     pub filter_input: String,
     pub error_message: Option<String>,
     pub info_message: Option<String>,
+    pub export_progress: Option<(usize, usize)>,
     pub should_quit: bool,
     pub log_receiver: Option<std::sync::mpsc::Receiver<LogEntry>>,
     pub is_loading: bool,
@@ -178,6 +179,7 @@ impl App {
             filter_input: String::new(),
             error_message: None,
             info_message: None,
+            export_progress: None,
             should_quit: false,
             log_receiver: None,
             is_loading: false,
@@ -1326,7 +1328,7 @@ impl App {
                         writer: Some(writer),
                         completed: false,
                     });
-                    self.info_message = Some(format!("Exporting {count} logs to {filename}..."));
+                    self.export_progress = Some((0, count));
                     return;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1342,6 +1344,7 @@ impl App {
 
     fn cancel_export(&mut self) {
         if self.export_job.take().is_some() {
+            self.export_progress = None;
             self.info_message = Some("Export cancelled because the log set changed".to_string());
         }
     }
@@ -1356,6 +1359,7 @@ impl App {
             .min(job.indices.len());
         for &index in &job.indices[job.cursor..end] {
             let Some(entry) = self.logs.get(index) else {
+                self.export_progress = None;
                 self.error_message = Some("Export cancelled: log data changed".to_string());
                 return;
             };
@@ -1365,6 +1369,7 @@ impl App {
                 .expect("active export has a writer")
                 .write_message(&entry.message)
             {
+                self.export_progress = None;
                 self.error_message = Some(format!("Export failed: {error}"));
                 return;
             }
@@ -1382,16 +1387,16 @@ impl App {
             {
                 Ok(()) => {
                     job.completed = true;
+                    self.export_progress = None;
                     self.info_message = Some(format!("Exported {count} logs to {filename}"));
                 }
-                Err(error) => self.error_message = Some(format!("Export failed: {error}")),
+                Err(error) => {
+                    self.export_progress = None;
+                    self.error_message = Some(format!("Export failed: {error}"));
+                }
             }
         } else {
-            self.info_message = Some(format!(
-                "Exporting {} of {} logs...",
-                end,
-                job.indices.len()
-            ));
+            self.export_progress = Some((end, job.indices.len()));
             self.export_job = Some(job);
         }
     }
@@ -2631,13 +2636,23 @@ mod tests {
             writer: Some(writer),
             completed: false,
         });
+        app.export_progress = Some((0, MAX_LOGS_PER_TICK + 1));
+        app.screen = AppScreen::LogViewer;
+        app.filtered_log_indices = (0..app.logs.len()).collect();
 
         app.on_tick();
         assert_eq!(app.export_job.as_ref().unwrap().cursor, MAX_LOGS_PER_TICK);
-        assert!(!app.info_message.as_deref().unwrap().starts_with("Exported"));
+        assert_eq!(
+            app.export_progress,
+            Some((MAX_LOGS_PER_TICK, MAX_LOGS_PER_TICK + 1))
+        );
+        assert!(app.info_message.is_none());
+        app.handle_key(make_key(KeyCode::Down), 20);
+        assert_eq!(app.logs_selected_index, 1);
 
         app.on_tick();
         assert!(app.export_job.is_none());
+        assert_eq!(app.export_progress, None);
         assert!(app.info_message.as_deref().unwrap().starts_with("Exported"));
         assert_eq!(
             std::fs::read_to_string(path).unwrap().lines().count(),

@@ -450,6 +450,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         (string, Style::default())
     };
 
+    let status_str = if let Some((done, total)) = app.export_progress {
+        format!("{status_str} | Export: {done}/{total}")
+    } else {
+        status_str
+    };
     let status = Paragraph::new(status_str)
         .style(status_style)
         .block(Block::default().title("Status").borders(Borders::ALL));
