@@ -103,6 +103,7 @@ pub struct App {
     /// BUG-1: Generation counter incremented on every apply_filter() call.
     /// on_tick() only appends new indices if filter_generation hasn't changed.
     filter_generation: u64,
+    text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
 }
 
 impl Default for App {
@@ -139,6 +140,7 @@ impl App {
             tcp_error: None,
             file_errors: None,
             filter_generation: 0,
+            text_regex_cache: None,
         }
     }
 
@@ -366,6 +368,27 @@ impl App {
         true
     }
 
+    fn compiled_text_regex(&mut self) -> Option<regex::Regex> {
+        let pattern = self.filter.text.clone();
+        if self
+            .text_regex_cache
+            .as_ref()
+            .is_none_or(|(cached_pattern, _)| *cached_pattern != pattern)
+        {
+            let compiled = pattern.as_ref().and_then(|text| {
+                regex::RegexBuilder::new(text)
+                    .case_insensitive(true)
+                    .size_limit(256 * 1024)
+                    .build()
+                    .ok()
+            });
+            self.text_regex_cache = Some((pattern, compiled));
+        }
+        self.text_regex_cache
+            .as_ref()
+            .and_then(|(_, regex)| regex.clone())
+    }
+
     pub fn apply_filter(&mut self) {
         self.filtered_log_indices.clear();
 
@@ -374,13 +397,7 @@ impl App {
 
         // Compile regex once if text filter exists
         // SEC-1: size_limit prevents ReDoS from malicious patterns
-        let text_regex = self.filter.text.as_ref().and_then(|text| {
-            regex::RegexBuilder::new(text)
-                .case_insensitive(true)
-                .size_limit(256 * 1024) // 256KB compiled regex limit
-                .build()
-                .ok() // If invalid regex, we will fallback to plain string search
-        });
+        let text_regex = self.compiled_text_regex();
 
         for (idx, log) in self.logs.iter().enumerate() {
             if Self::check_log_against_filter(&log.message, &self.filter, text_regex.as_ref()) {
@@ -594,13 +611,7 @@ impl App {
             }
 
             if added {
-                let text_regex = self.filter.text.as_ref().and_then(|text| {
-                    regex::RegexBuilder::new(text)
-                        .case_insensitive(true)
-                        .size_limit(256 * 1024)
-                        .build()
-                        .ok()
-                });
+                let text_regex = self.compiled_text_regex();
 
                 // BUG-1: Only append incrementally if filter hasn't been reapplied
                 // since we captured current_gen. If it changed, apply_filter()

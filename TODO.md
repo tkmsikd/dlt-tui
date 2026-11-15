@@ -35,8 +35,8 @@ Items are ordered by security and correctness impact. Complete each item with a 
 
 ## 7. Reuse compiled text filters
 
-- [ ] Recompile only when the active text filter changes.
-- [ ] Make invalid-regex behavior clear and consistent.
+- [x] Recompile only when the active text filter changes.
+- [x] Keep invalid-regex fallback consistent with plain-string search in both full and incremental filtering.
 
 ## 8. Keep the interface responsive during full scans and exports
 
