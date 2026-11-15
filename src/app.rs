@@ -494,6 +494,9 @@ impl App {
         self.filter_scan_cursor = (end < self.logs.len()).then_some(end);
         self.merge_filtered_indices(matching);
         self.sync_sidebar_selection();
+        if self.auto_scroll && !self.filtered_log_indices.is_empty() {
+            self.logs_selected_index = self.filtered_log_indices.len() - 1;
+        }
     }
 
     #[cfg(test)]
@@ -2587,6 +2590,7 @@ mod tests {
     #[test]
     fn test_filter_scan_processes_large_logs_incrementally() {
         let mut app = App::new();
+        app.auto_scroll = true;
         for i in 0..(MAX_LOGS_PER_TICK * 2 + 1) {
             app.logs.push(mock_entry(i as u64, "message", None, 0));
         }
@@ -2597,14 +2601,17 @@ mod tests {
         app.on_tick();
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
         assert!(app.filter_scan_cursor.is_some());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK - 1);
 
         app.on_tick();
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2);
         assert!(app.filter_scan_cursor.is_some());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK * 2 - 1);
 
         app.on_tick();
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2 + 1);
         assert!(app.filter_scan_cursor.is_none());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK * 2);
     }
 
     #[test]
