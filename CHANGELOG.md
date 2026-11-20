@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-20
+
+### Added
+
+- Ranked Source/CTX sidebar navigation and filtering, including full source paths and missing contexts.
+- Scrolling for log details and large source/context lists.
+- Incremental export progress without blocking viewer navigation.
+
 ### Fixed
 
+- Preserved sidebar selection and tail following while counts and filter results change.
+- Prevented partial exports while filtering is in progress and hidden sidebar focus on narrow terminals.
+- Preserved daemon restart and counter-wrap history across filtering; incompatible clock domains display `N/A` deltas.
+- Reset detail scrolling when jumping between logs with Home/End.
+- Hardened incomplete TCP frame recovery and verbose argument decoding and sanitization.
+- Bounded filter configuration reads and made configuration writes atomic.
 - Updated the locked Ratatui core dependency to use patched `lru`, passing RustSec audit without advisory exceptions.
 - Terminal event-loop I/O errors now produce a failing exit status after terminal cleanup.
 - Exports atomically refuse existing destinations, preventing a concurrent file creation from causing data loss.
@@ -16,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Processed large filter scans and exports incrementally and cached text regular expressions.
+- Distinguished storage timestamps from daemon-relative ticks when ordering and displaying logs.
+- Updated security dependencies and replaced unmaintained `chrono` with `jiff`.
 - Security audit jobs time out after 15 minutes.
 - Clarified implemented features, future requirements, input-size limits, and reproducible contributor checks.
 
@@ -190,7 +207,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security hardening** — Zip bomb protection (500MB limit), terminal injection sanitization
 - **CLI argument support** — pass a directory or file path to open directly
 
-[Unreleased]: https://github.com/tkmsikd/dlt-tui/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/tkmsikd/dlt-tui/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/tkmsikd/dlt-tui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tkmsikd/dlt-tui/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tkmsikd/dlt-tui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tkmsikd/dlt-tui/compare/v0.4.1...v1.0.0
