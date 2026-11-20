@@ -224,7 +224,12 @@ pub fn draw(f: &mut Frame, app: &App) {
                         )
                     });
                     if log.timestamp_domain == crate::parser::TimestampDomain::DaemonRelative
-                        && previous.is_some_and(|(_, source, epoch)| source && epoch)
+                        && previous.is_some_and(|(message, source, epoch)| {
+                            message.timestamp_domain
+                                == crate::parser::TimestampDomain::DaemonRelative
+                                && source
+                                && epoch
+                        })
                         && entry.daemon_wrap_offset > 0
                     {
                         let prior = &app.logs[app.filtered_log_indices[i - 1]];
@@ -752,6 +757,42 @@ mod tests {
             format_delta_time(&restarted, Some(&relative), true, false),
             "N/A"
         );
+    }
+
+    #[test]
+    fn test_wrap_delta_rendering_rejects_mixed_timestamp_domains() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.show_time_delta = true;
+        let mut absolute = DltMessage::new(
+            1_700_000_000_000_000,
+            "ECU1".into(),
+            None,
+            None,
+            None,
+            vec![],
+        );
+        absolute.timestamp_domain = TimestampDomain::StorageAbsolute;
+        let mut relative = DltMessage::new(
+            20_000,
+            "ECU1".into(),
+            None,
+            None,
+            None,
+            b"relative".to_vec(),
+        );
+        relative.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut entry = LogEntry::new(relative, None, 0);
+        entry.daemon_wrap_offset = (u32::MAX as u64 + 1) * 100;
+        app.logs = vec![LogEntry::new(absolute, None, 0), entry];
+        app.filtered_log_indices = vec![0, 1];
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("N/A"), "{text}");
+        assert!(text.contains("relative"), "{text}");
     }
 
     #[test]
