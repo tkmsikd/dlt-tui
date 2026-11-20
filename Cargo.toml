@@ -21,7 +21,7 @@ exclude = [
 ]
 
 [dependencies]
-chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+jiff = "0.2"
 crossterm = "0.29.0"
 flate2 = "1.1.9"
 nom = "8.0.0"

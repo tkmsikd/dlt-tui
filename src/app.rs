@@ -1351,8 +1351,8 @@ impl App {
             return;
         }
 
-        let now = chrono::Local::now();
-        let base = format!("dlt_export_{}", now.format("%Y%m%d_%H%M%S"));
+        let now = jiff::Zoned::now();
+        let base = format!("dlt_export_{}", now.strftime("%Y%m%d_%H%M%S"));
 
         for suffix in 0..=999 {
             let filename = if suffix == 0 {
