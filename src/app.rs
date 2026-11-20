@@ -55,6 +55,7 @@ pub struct LogEntry {
     pub source_file: Option<Arc<PathBuf>>,
     pub source_index: usize,
     pub daemon_epoch: u64,
+    pub daemon_wrap_offset: u64,
 }
 
 struct ExportJob {
@@ -81,6 +82,7 @@ impl LogEntry {
             source_file: source_file.map(Arc::new),
             source_index,
             daemon_epoch: 0,
+            daemon_wrap_offset: 0,
         }
     }
 
@@ -94,6 +96,7 @@ impl LogEntry {
             source_file,
             source_index,
             daemon_epoch: 0,
+            daemon_wrap_offset: 0,
         }
     }
 
@@ -152,7 +155,7 @@ pub struct App {
     text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
     filter_scan_cursor: Option<usize>,
     export_job: Option<ExportJob>,
-    daemon_clock_state: BTreeMap<usize, (u64, u64)>,
+    daemon_clock_state: BTreeMap<usize, (u64, u64, u64)>,
 }
 
 impl Default for App {
@@ -508,24 +511,29 @@ impl App {
     }
 
     fn record_daemon_epoch(
-        state_by_source: &mut BTreeMap<usize, (u64, u64)>,
+        state_by_source: &mut BTreeMap<usize, (u64, u64, u64)>,
         entry: &mut LogEntry,
     ) {
         if entry.message.timestamp_domain != crate::parser::TimestampDomain::DaemonRelative {
             return;
         }
         const WRAP_PERIOD_US: u64 = (u32::MAX as u64 + 1) * 100;
-        let state = state_by_source
-            .entry(entry.source_index)
-            .or_insert((entry.message.timestamp_us, 0));
+        let state =
+            state_by_source
+                .entry(entry.source_index)
+                .or_insert((entry.message.timestamp_us, 0, 0));
         let previous = state.0;
         if entry.message.timestamp_us < previous
             && previous - entry.message.timestamp_us <= WRAP_PERIOD_US / 2
         {
             state.1 = state.1.saturating_add(1);
+            state.2 = 0;
+        } else if entry.message.timestamp_us < previous {
+            state.2 = state.2.saturating_add(WRAP_PERIOD_US);
         }
         state.0 = entry.message.timestamp_us;
         entry.daemon_epoch = state.1;
+        entry.daemon_wrap_offset = state.2;
     }
 
     #[cfg(test)]
@@ -711,6 +719,9 @@ impl App {
     }
 
     pub fn on_home(&mut self) {
+        if self.screen == AppScreen::LogDetail {
+            self.detail_scroll = 0;
+        }
         match self.screen {
             AppScreen::Explorer => self.explorer_selected_index = 0,
             AppScreen::LogViewer | AppScreen::LogDetail => self.logs_selected_index = 0,
@@ -718,6 +729,9 @@ impl App {
     }
 
     pub fn on_end(&mut self) {
+        if self.screen == AppScreen::LogDetail {
+            self.detail_scroll = 0;
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if !self.explorer_items.is_empty() {
@@ -2683,6 +2697,37 @@ mod tests {
             app.logs[app.filtered_log_indices[0]].daemon_epoch,
             app.logs[app.filtered_log_indices[1]].daemon_epoch
         );
+    }
+
+    #[test]
+    fn test_wrap_history_survives_hidden_boundary() {
+        let mut app = App::new();
+        let mut state = BTreeMap::new();
+        for ticks in [100, u32::MAX as u64, 200] {
+            let mut entry = mock_entry(ticks * 100, "message", None, 0);
+            entry.message.timestamp_domain = crate::parser::TimestampDomain::DaemonRelative;
+            App::record_daemon_epoch(&mut state, &mut entry);
+            app.logs.push(entry);
+        }
+        assert_eq!(app.logs[2].daemon_epoch, 0);
+        assert_eq!(
+            app.logs[2].daemon_wrap_offset + app.logs[2].message.timestamp_us
+                - app.logs[0].message.timestamp_us,
+            429_496_739_600
+        );
+    }
+
+    #[test]
+    fn test_detail_home_end_reset_scroll() {
+        let mut app = build_mock_app_with_logs(3);
+        app.screen = AppScreen::LogDetail;
+        app.logs_selected_index = 1;
+        app.detail_scroll = 20;
+        app.on_home();
+        assert_eq!((app.logs_selected_index, app.detail_scroll), (0, 0));
+        app.detail_scroll = 20;
+        app.on_end();
+        assert_eq!((app.logs_selected_index, app.detail_scroll), (2, 0));
     }
 
     #[test]

@@ -223,12 +223,23 @@ pub fn draw(f: &mut Frame, app: &App) {
                             previous_entry.daemon_epoch == entry.daemon_epoch,
                         )
                     });
-                    format_delta_time(
-                        log,
-                        previous.as_ref().map(|(message, _, _)| *message),
-                        previous.is_some_and(|(_, same_source, _)| same_source),
-                        previous.is_some_and(|(_, _, same_epoch)| same_epoch),
-                    )
+                    if log.timestamp_domain == crate::parser::TimestampDomain::DaemonRelative
+                        && previous.is_some_and(|(_, source, epoch)| source && epoch)
+                        && entry.daemon_wrap_offset > 0
+                    {
+                        let prior = &app.logs[app.filtered_log_indices[i - 1]];
+                        let delta = (log.timestamp_us as u128 + entry.daemon_wrap_offset as u128)
+                            - (prior.message.timestamp_us as u128
+                                + prior.daemon_wrap_offset as u128);
+                        format!("+{}.{:06}s", delta / 1_000_000, delta % 1_000_000)
+                    } else {
+                        format_delta_time(
+                            log,
+                            previous.as_ref().map(|(message, _, _)| *message),
+                            previous.is_some_and(|(_, same_source, _)| same_source),
+                            previous.is_some_and(|(_, _, same_epoch)| same_epoch),
+                        )
+                    }
                 } else {
                     format_message_timestamp(log)
                 };
