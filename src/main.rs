@@ -260,7 +260,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) 
         if crossterm::event::poll(tick_rate)?
             && let Event::Key(key) = event::read()?
         {
-            app.handle_key(key, page_size);
+            if terminal.size()?.width < 100 {
+                app.sidebar_focus = crate::app::SidebarFocus::Logs;
+                if key.code != crossterm::event::KeyCode::Tab {
+                    app.handle_key(key, page_size);
+                }
+            } else {
+                app.handle_key(key, page_size);
+            }
         }
 
         app.on_tick();

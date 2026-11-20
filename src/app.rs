@@ -1,6 +1,7 @@
 use crate::explorer::{self, FileEntry};
 use crate::parser::DltMessage;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -9,6 +10,8 @@ use std::sync::{
 
 const LOG_CHANNEL_CAPACITY: usize = 256;
 const MAX_LOGS_PER_TICK: usize = 1024;
+const MAX_FILTER_CONFIG_BYTES: u64 = 1_048_576;
+static CONFIG_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum AppScreen {
@@ -24,6 +27,9 @@ pub struct Filter {
     pub min_level: Option<crate::parser::LogLevel>,
     pub app_id: Option<String>,
     pub ctx_id: Option<String>,
+    #[serde(default)]
+    pub ctx_missing: bool,
+    pub source: Option<String>,
     pub text: Option<String>,
 }
 
@@ -35,11 +41,38 @@ pub enum FilterInputMode {
     MinLevel,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarFocus {
+    #[default]
+    Logs,
+    Sources,
+    Contexts,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct LogEntry {
     pub message: DltMessage,
     pub source_file: Option<Arc<PathBuf>>,
     pub source_index: usize,
+    pub daemon_epoch: u64,
+    pub daemon_wrap_offset: u64,
+}
+
+struct ExportJob {
+    path: PathBuf,
+    indices: Vec<usize>,
+    cursor: usize,
+    writer: Option<crate::exporter::TextWriter>,
+    completed: bool,
+}
+
+impl Drop for ExportJob {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.writer.take();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl LogEntry {
@@ -48,6 +81,8 @@ impl LogEntry {
             message,
             source_file: source_file.map(Arc::new),
             source_index,
+            daemon_epoch: 0,
+            daemon_wrap_offset: 0,
         }
     }
 
@@ -60,6 +95,8 @@ impl LogEntry {
             message,
             source_file,
             source_index,
+            daemon_epoch: 0,
+            daemon_wrap_offset: 0,
         }
     }
 
@@ -69,6 +106,13 @@ impl LogEntry {
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .unwrap_or("-")
+    }
+
+    pub fn source_identity(&self) -> String {
+        self.source_file
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "-".to_string())
     }
 }
 
@@ -80,18 +124,26 @@ pub struct App {
     pub filtered_log_indices: Vec<usize>,
     source_count_cache: BTreeMap<String, usize>,
     ctx_count_cache: BTreeMap<String, usize>,
+    ctx_missing_count: usize,
     pub logs_selected_index: usize,
+    pub sidebar_focus: SidebarFocus,
+    pub source_sidebar_selected_index: usize,
+    pub ctx_sidebar_selected_index: usize,
+    source_sidebar_selected_key: Option<String>,
+    ctx_sidebar_selected_key: Option<Option<String>>,
     pub filter: Filter,
     pub filter_input_mode: Option<FilterInputMode>,
     pub filter_input: String,
     pub error_message: Option<String>,
     pub info_message: Option<String>,
+    pub export_progress: Option<(usize, usize)>,
     pub should_quit: bool,
     pub log_receiver: Option<std::sync::mpsc::Receiver<LogEntry>>,
     pub is_loading: bool,
     pub connection_info: Option<String>,
     pub auto_scroll: bool,
     pub horizontal_scroll: usize,
+    pub detail_scroll: usize,
     pub show_time_delta: bool,
     pub skipped_bytes: usize,
     skipped_bytes_shared: Option<Arc<AtomicUsize>>,
@@ -100,6 +152,10 @@ pub struct App {
     /// BUG-1: Generation counter incremented on every apply_filter() call.
     /// on_tick() only appends new indices if filter_generation hasn't changed.
     filter_generation: u64,
+    text_regex_cache: Option<(Option<String>, Option<regex::Regex>)>,
+    filter_scan_cursor: Option<usize>,
+    export_job: Option<ExportJob>,
+    daemon_clock_state: BTreeMap<usize, (u64, u64, u64)>,
 }
 
 impl Default for App {
@@ -118,51 +174,98 @@ impl App {
             filtered_log_indices: vec![],
             source_count_cache: BTreeMap::new(),
             ctx_count_cache: BTreeMap::new(),
+            ctx_missing_count: 0,
             logs_selected_index: 0,
+            sidebar_focus: SidebarFocus::Logs,
+            source_sidebar_selected_index: 0,
+            ctx_sidebar_selected_index: 0,
+            source_sidebar_selected_key: None,
+            ctx_sidebar_selected_key: None,
             filter: Filter::default(),
             filter_input_mode: None,
             filter_input: String::new(),
             error_message: None,
             info_message: None,
+            export_progress: None,
             should_quit: false,
             log_receiver: None,
             is_loading: false,
             connection_info: None,
             auto_scroll: false,
             horizontal_scroll: 0,
+            detail_scroll: 0,
             show_time_delta: false,
             skipped_bytes: 0,
             skipped_bytes_shared: None,
             tcp_error: None,
             file_errors: None,
             filter_generation: 0,
+            text_regex_cache: None,
+            filter_scan_cursor: None,
+            export_job: None,
+            daemon_clock_state: BTreeMap::new(),
         }
     }
 
     pub fn load_filter_config(&mut self) {
         let path = std::path::Path::new(".dlt-tui.toml");
-        // SEC-4: check file size before reading (1MB limit)
-        if let Ok(meta) = std::fs::metadata(path)
-            && meta.len() > 1_048_576
-        {
-            self.error_message = Some("Config file too large (>1MB)".to_string());
-            return;
-        }
-        if path.exists()
-            && let Ok(content) = std::fs::read_to_string(path)
-            && let Ok(filter) = toml::from_str::<Filter>(&content)
-        {
-            self.filter = filter;
-            self.info_message = Some("Loaded filter from .dlt-tui.toml".to_string());
+        match std::fs::File::open(path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                if let Err(error) = file
+                    .take(MAX_FILTER_CONFIG_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                {
+                    self.error_message = Some(format!("Failed to read filter config: {error}"));
+                    return;
+                }
+                if bytes.len() as u64 > MAX_FILTER_CONFIG_BYTES {
+                    self.error_message = Some("Config file too large (>1MB)".to_string());
+                    return;
+                }
+                match toml::from_slice::<Filter>(&bytes) {
+                    Ok(filter) => {
+                        self.filter = filter;
+                        self.info_message = Some("Loaded filter from .dlt-tui.toml".to_string());
+                    }
+                    Err(error) => {
+                        self.error_message = Some(format!("Invalid filter config: {error}"));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.error_message = Some(format!("Failed to read filter config: {error}"));
+            }
         }
     }
 
     pub fn save_filter_config(&mut self) {
         if let Ok(content) = toml::to_string(&self.filter) {
-            if std::fs::write(".dlt-tui.toml", content).is_ok() {
-                self.info_message = Some("Saved filter to .dlt-tui.toml".to_string());
-            } else {
-                self.error_message = Some("Failed to save filter config".to_string());
+            let destination = Path::new(".dlt-tui.toml");
+            let temp_path = destination.with_file_name(format!(
+                ".dlt-tui.toml.{}.{}.tmp",
+                std::process::id(),
+                CONFIG_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            let save_result = (|| {
+                let mut temp = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp_path)?;
+                std::io::Write::write_all(&mut temp, content.as_bytes())?;
+                temp.sync_all()?;
+                drop(temp);
+                std::fs::rename(&temp_path, destination)
+            })();
+            match save_result {
+                Ok(()) => {
+                    self.info_message = Some("Saved filter to .dlt-tui.toml".to_string());
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    self.error_message = Some(format!("Failed to save filter config: {error}"));
+                }
             }
         } else {
             self.error_message = Some("Failed to serialize filter".to_string());
@@ -193,7 +296,9 @@ impl App {
     }
 
     pub fn load_files(&mut self, paths: Vec<PathBuf>) -> std::io::Result<()> {
+        self.cancel_export();
         self.logs.clear();
+        self.daemon_clock_state.clear();
         self.filtered_log_indices.clear();
         self.logs_selected_index = 0;
         self.error_message = None;
@@ -262,10 +367,16 @@ impl App {
     }
 
     fn check_log_against_filter(
-        log: &DltMessage,
+        entry: &LogEntry,
         filter: &Filter,
         regex: Option<&regex::Regex>,
     ) -> bool {
+        let log = &entry.message;
+        if let Some(source) = &filter.source
+            && entry.source_identity() != *source
+        {
+            return false;
+        }
         if let Some(ref min_level) = filter.min_level {
             // Determine if log_level is severe enough or matches
             // Simplification for MVP: We just check exact equality or we can skip for now
@@ -300,7 +411,12 @@ impl App {
             }
         }
 
-        if let Some(ref ctx_id) = filter.ctx_id {
+        if filter.ctx_missing && log.ctid.is_some() {
+            return false;
+        }
+        if !filter.ctx_missing
+            && let Some(ref ctx_id) = filter.ctx_id
+        {
             let matches = log
                 .ctid
                 .as_deref()
@@ -328,33 +444,99 @@ impl App {
         true
     }
 
+    fn compiled_text_regex(&mut self) -> Option<regex::Regex> {
+        let pattern = self.filter.text.clone();
+        if self
+            .text_regex_cache
+            .as_ref()
+            .is_none_or(|(cached_pattern, _)| *cached_pattern != pattern)
+        {
+            let compiled = pattern.as_ref().and_then(|text| {
+                regex::RegexBuilder::new(text)
+                    .case_insensitive(true)
+                    .size_limit(256 * 1024)
+                    .build()
+                    .ok()
+            });
+            self.text_regex_cache = Some((pattern, compiled));
+        }
+        self.text_regex_cache
+            .as_ref()
+            .and_then(|(_, regex)| regex.clone())
+    }
+
     pub fn apply_filter(&mut self) {
+        self.begin_filter();
+        while self.filter_scan_cursor.is_some() {
+            self.process_filter_chunk(usize::MAX);
+        }
+    }
+
+    pub fn begin_filter(&mut self) {
         self.filtered_log_indices.clear();
+        self.source_count_cache.clear();
+        self.ctx_count_cache.clear();
+        self.ctx_missing_count = 0;
 
-        // BUG-1: bump generation so on_tick won't append with stale filter
         self.filter_generation = self.filter_generation.wrapping_add(1);
+        self.filter_scan_cursor = Some(0);
+        self.logs_selected_index = 0;
+        if self.logs.len() <= MAX_LOGS_PER_TICK {
+            self.process_filter_chunk(MAX_LOGS_PER_TICK);
+        }
+    }
 
-        // Compile regex once if text filter exists
-        // SEC-1: size_limit prevents ReDoS from malicious patterns
-        let text_regex = self.filter.text.as_ref().and_then(|text| {
-            regex::RegexBuilder::new(text)
-                .case_insensitive(true)
-                .size_limit(256 * 1024) // 256KB compiled regex limit
-                .build()
-                .ok() // If invalid regex, we will fallback to plain string search
-        });
+    fn process_filter_chunk(&mut self, max_items: usize) {
+        let Some(start) = self.filter_scan_cursor else {
+            return;
+        };
+        let end = start.saturating_add(max_items).min(self.logs.len());
+        let filter = self.filter.clone();
+        let text_regex = self.compiled_text_regex();
+        let mut matching = Vec::new();
 
-        for (idx, log) in self.logs.iter().enumerate() {
-            if Self::check_log_against_filter(&log.message, &self.filter, text_regex.as_ref()) {
-                self.filtered_log_indices.push(idx);
+        for idx in start..end {
+            if Self::check_log_against_filter(&self.logs[idx], &filter, text_regex.as_ref()) {
+                matching.push(idx);
+                self.increment_sidebar_counts(idx);
             }
         }
 
-        self.sort_filtered_indices();
-        self.rebuild_sidebar_counts();
-        self.logs_selected_index = 0;
+        self.filter_scan_cursor = (end < self.logs.len()).then_some(end);
+        self.merge_filtered_indices(matching);
+        self.sync_sidebar_selection();
+        if self.auto_scroll && !self.filtered_log_indices.is_empty() {
+            self.logs_selected_index = self.filtered_log_indices.len() - 1;
+        }
     }
 
+    fn record_daemon_epoch(
+        state_by_source: &mut BTreeMap<usize, (u64, u64, u64)>,
+        entry: &mut LogEntry,
+    ) {
+        if entry.message.timestamp_domain != crate::parser::TimestampDomain::DaemonRelative {
+            return;
+        }
+        const WRAP_PERIOD_US: u64 = (u32::MAX as u64 + 1) * 100;
+        let state =
+            state_by_source
+                .entry(entry.source_index)
+                .or_insert((entry.message.timestamp_us, 0, 0));
+        let previous = state.0;
+        if entry.message.timestamp_us < previous
+            && previous - entry.message.timestamp_us <= WRAP_PERIOD_US / 2
+        {
+            state.1 = state.1.saturating_add(1);
+            state.2 = 0;
+        } else if entry.message.timestamp_us < previous {
+            state.2 = state.2.saturating_add(WRAP_PERIOD_US);
+        }
+        state.0 = entry.message.timestamp_us;
+        entry.daemon_epoch = state.1;
+        entry.daemon_wrap_offset = state.2;
+    }
+
+    #[cfg(test)]
     fn sort_filtered_indices(&mut self) {
         let logs = &self.logs;
         self.filtered_log_indices
@@ -365,6 +547,11 @@ impl App {
         if incoming.is_empty() {
             return;
         }
+
+        let selected_log = self
+            .filtered_log_indices
+            .get(self.logs_selected_index)
+            .copied();
 
         let logs = &self.logs;
         if !incoming
@@ -379,56 +566,121 @@ impl App {
                 <= Self::log_sort_key(logs, incoming[0])
         {
             self.filtered_log_indices.extend(incoming);
-            return;
-        }
+        } else {
+            let first_key = Self::log_sort_key(logs, incoming[0]);
+            let split = self
+                .filtered_log_indices
+                .partition_point(|&idx| Self::log_sort_key(logs, idx) < first_key);
+            let tail = self.filtered_log_indices.split_off(split);
+            let mut existing = tail.into_iter().peekable();
+            let mut incoming = incoming.into_iter().peekable();
+            let mut merged = Vec::with_capacity(existing.len() + incoming.len());
 
-        let first_key = Self::log_sort_key(logs, incoming[0]);
-        let split = self
-            .filtered_log_indices
-            .partition_point(|&idx| Self::log_sort_key(logs, idx) < first_key);
-        let tail = self.filtered_log_indices.split_off(split);
-        let mut existing = tail.into_iter().peekable();
-        let mut incoming = incoming.into_iter().peekable();
-        let mut merged = Vec::with_capacity(existing.len() + incoming.len());
-
-        while let (Some(&left), Some(&right)) = (existing.peek(), incoming.peek()) {
-            if Self::log_sort_key(logs, left) <= Self::log_sort_key(logs, right) {
-                merged.push(existing.next().unwrap());
-            } else {
-                merged.push(incoming.next().unwrap());
+            while let (Some(&left), Some(&right)) = (existing.peek(), incoming.peek()) {
+                if Self::log_sort_key(logs, left) <= Self::log_sort_key(logs, right) {
+                    merged.push(existing.next().unwrap());
+                } else {
+                    merged.push(incoming.next().unwrap());
+                }
             }
+            merged.extend(existing);
+            merged.extend(incoming);
+            self.filtered_log_indices.extend(merged);
         }
-        merged.extend(existing);
-        merged.extend(incoming);
-        self.filtered_log_indices.extend(merged);
+
+        if let Some(selected_log) = selected_log {
+            let selected_key = Self::log_sort_key(logs, selected_log);
+            self.logs_selected_index = self
+                .filtered_log_indices
+                .partition_point(|&idx| Self::log_sort_key(logs, idx) < selected_key);
+        }
     }
 
-    fn log_sort_key(logs: &[LogEntry], idx: usize) -> (bool, u64, usize, usize) {
+    fn log_sort_key(logs: &[LogEntry], idx: usize) -> (u8, u64, usize, usize) {
         let entry = &logs[idx];
-        (
-            entry.message.timestamp_us == 0,
-            entry.message.timestamp_us,
-            entry.source_index,
-            idx,
-        )
-    }
-
-    fn rebuild_sidebar_counts(&mut self) {
-        self.source_count_cache.clear();
-        self.ctx_count_cache.clear();
-        for &idx in &self.filtered_log_indices {
-            let source = self.logs[idx].source_name();
-            Self::increment_count(&mut self.source_count_cache, source);
-            let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
-            Self::increment_count(&mut self.ctx_count_cache, ctx);
+        match entry.message.timestamp_domain {
+            crate::parser::TimestampDomain::StorageAbsolute
+            | crate::parser::TimestampDomain::Unspecified
+                if entry.message.timestamp_us != 0 =>
+            {
+                (0, entry.message.timestamp_us, entry.source_index, idx)
+            }
+            crate::parser::TimestampDomain::DaemonRelative => {
+                (1, entry.source_index as u64, idx, idx)
+            }
+            crate::parser::TimestampDomain::StorageAbsolute => (0, 0, entry.source_index, idx),
+            crate::parser::TimestampDomain::Missing
+            | crate::parser::TimestampDomain::Unspecified => (2, 0, entry.source_index, idx),
         }
     }
 
     fn increment_sidebar_counts(&mut self, idx: usize) {
-        let source = self.logs[idx].source_name();
-        Self::increment_count(&mut self.source_count_cache, source);
-        let ctx = self.logs[idx].message.ctid.as_deref().unwrap_or("-");
-        Self::increment_count(&mut self.ctx_count_cache, ctx);
+        let source = self.logs[idx].source_identity();
+        Self::increment_count(&mut self.source_count_cache, &source);
+        if let Some(ctx) = self.logs[idx].message.ctid.as_deref() {
+            Self::increment_count(&mut self.ctx_count_cache, ctx);
+        } else {
+            self.ctx_missing_count += 1;
+        }
+    }
+
+    fn remember_sidebar_selection(&mut self) {
+        match self.sidebar_focus {
+            SidebarFocus::Sources => {
+                self.source_sidebar_selected_key = Self::ranked_keys(&self.source_count_cache)
+                    .get(self.source_sidebar_selected_index)
+                    .cloned();
+            }
+            SidebarFocus::Contexts => {
+                self.ctx_sidebar_selected_key = self
+                    .ranked_ctx_entries()
+                    .get(self.ctx_sidebar_selected_index)
+                    .map(|(ctx, _)| ctx.clone());
+            }
+            SidebarFocus::Logs => {}
+        }
+    }
+
+    fn sync_sidebar_selection(&mut self) {
+        let sources = Self::ranked_keys(&self.source_count_cache);
+        if let Some(key) = &self.source_sidebar_selected_key {
+            if let Some(index) = sources.iter().position(|candidate| candidate == key) {
+                self.source_sidebar_selected_index = index;
+            } else if self.filter_scan_cursor.is_none() {
+                self.source_sidebar_selected_index = self
+                    .source_sidebar_selected_index
+                    .min(sources.len().saturating_sub(1));
+                self.source_sidebar_selected_key =
+                    sources.get(self.source_sidebar_selected_index).cloned();
+            }
+        } else {
+            self.source_sidebar_selected_index = self
+                .source_sidebar_selected_index
+                .min(sources.len().saturating_sub(1));
+            self.source_sidebar_selected_key =
+                sources.get(self.source_sidebar_selected_index).cloned();
+        }
+
+        let contexts = self.ranked_ctx_entries();
+        if let Some(key) = &self.ctx_sidebar_selected_key {
+            if let Some(index) = contexts.iter().position(|(candidate, _)| candidate == key) {
+                self.ctx_sidebar_selected_index = index;
+            } else if self.filter_scan_cursor.is_none() {
+                self.ctx_sidebar_selected_index = self
+                    .ctx_sidebar_selected_index
+                    .min(contexts.len().saturating_sub(1));
+                self.ctx_sidebar_selected_key = contexts
+                    .get(self.ctx_sidebar_selected_index)
+                    .map(|(ctx, _)| ctx.clone());
+            }
+        } else {
+            self.ctx_sidebar_selected_index = self
+                .ctx_sidebar_selected_index
+                .min(contexts.len().saturating_sub(1));
+            self.ctx_sidebar_selected_key = contexts
+                .get(self.ctx_sidebar_selected_index)
+                .map(|(ctx, _)| ctx.clone());
+        }
     }
 
     fn increment_count(counts: &mut BTreeMap<String, usize>, key: &str) {
@@ -447,6 +699,19 @@ impl App {
         &self.ctx_count_cache
     }
 
+    pub(crate) fn ranked_ctx_entries(&self) -> Vec<(Option<String>, usize)> {
+        let mut entries: Vec<_> = self
+            .ctx_count_cache
+            .iter()
+            .map(|(ctx, count)| (Some(ctx.clone()), *count))
+            .collect();
+        if self.ctx_missing_count > 0 {
+            entries.push((None, self.ctx_missing_count));
+        }
+        entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
     pub fn selected_entry(&self) -> Option<&LogEntry> {
         self.filtered_log_indices
             .get(self.logs_selected_index)
@@ -454,6 +719,9 @@ impl App {
     }
 
     pub fn on_home(&mut self) {
+        if self.screen == AppScreen::LogDetail {
+            self.detail_scroll = 0;
+        }
         match self.screen {
             AppScreen::Explorer => self.explorer_selected_index = 0,
             AppScreen::LogViewer | AppScreen::LogDetail => self.logs_selected_index = 0,
@@ -461,6 +729,9 @@ impl App {
     }
 
     pub fn on_end(&mut self) {
+        if self.screen == AppScreen::LogDetail {
+            self.detail_scroll = 0;
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if !self.explorer_items.is_empty() {
@@ -495,7 +766,8 @@ impl App {
 
             for _ in 0..MAX_LOGS_PER_TICK {
                 match rx.try_recv() {
-                    Ok(msg) => {
+                    Ok(mut msg) => {
+                        Self::record_daemon_epoch(&mut self.daemon_clock_state, &mut msg);
                         self.logs.push(msg);
                         added = true;
                     }
@@ -543,28 +815,26 @@ impl App {
             }
 
             if added {
-                let text_regex = self.filter.text.as_ref().and_then(|text| {
-                    regex::RegexBuilder::new(text)
-                        .case_insensitive(true)
-                        .size_limit(256 * 1024)
-                        .build()
-                        .ok()
-                });
+                let text_regex = self.compiled_text_regex();
 
                 // BUG-1: Only append incrementally if filter hasn't been reapplied
                 // since we captured current_gen. If it changed, apply_filter()
                 // already rebuilt the full index, so skip incremental append.
-                if self.filter_generation == current_gen {
+                if self.filter_generation == current_gen && self.filter_scan_cursor.is_none() {
                     let mut new_filtered_indices =
                         Vec::with_capacity(self.logs.len() - current_len);
                     for idx in current_len..self.logs.len() {
-                        let log = &self.logs[idx].message;
-                        if Self::check_log_against_filter(log, &self.filter, text_regex.as_ref()) {
+                        if Self::check_log_against_filter(
+                            &self.logs[idx],
+                            &self.filter,
+                            text_regex.as_ref(),
+                        ) {
                             new_filtered_indices.push(idx);
                             self.increment_sidebar_counts(idx);
                         }
                     }
                     self.merge_filtered_indices(new_filtered_indices);
+                    self.sync_sidebar_selection();
                 }
 
                 // Auto-scroll: keep cursor at the end when in tail mode
@@ -573,24 +843,73 @@ impl App {
                 }
             }
         }
+
+        if self.filter_scan_cursor.is_some() {
+            self.process_filter_chunk(MAX_LOGS_PER_TICK);
+        }
+        self.process_export_chunk();
     }
 
     pub fn on_up(&mut self) {
+        if self.screen == AppScreen::LogViewer {
+            match self.sidebar_focus {
+                SidebarFocus::Sources => {
+                    self.source_sidebar_selected_index =
+                        self.source_sidebar_selected_index.saturating_sub(1);
+                    self.remember_sidebar_selection();
+                    return;
+                }
+                SidebarFocus::Contexts => {
+                    self.ctx_sidebar_selected_index =
+                        self.ctx_sidebar_selected_index.saturating_sub(1);
+                    self.remember_sidebar_selection();
+                    return;
+                }
+                SidebarFocus::Logs => {}
+            }
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if self.explorer_selected_index > 0 {
                     self.explorer_selected_index -= 1;
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if self.logs_selected_index > 0 {
                     self.logs_selected_index -= 1;
+                }
+            }
+            AppScreen::LogDetail => {
+                if self.logs_selected_index > 0 {
+                    self.logs_selected_index -= 1;
+                    self.detail_scroll = 0;
                 }
             }
         }
     }
 
     pub fn on_down(&mut self) {
+        if self.screen == AppScreen::LogViewer {
+            match self.sidebar_focus {
+                SidebarFocus::Sources => {
+                    self.source_sidebar_selected_index = self
+                        .source_sidebar_selected_index
+                        .saturating_add(1)
+                        .min(self.source_count_cache.len().saturating_sub(1));
+                    self.remember_sidebar_selection();
+                    return;
+                }
+                SidebarFocus::Contexts => {
+                    self.ctx_sidebar_selected_index = self
+                        .ctx_sidebar_selected_index
+                        .saturating_add(1)
+                        .min(self.ranked_ctx_entries().len().saturating_sub(1));
+                    self.remember_sidebar_selection();
+                    return;
+                }
+                SidebarFocus::Logs => {}
+            }
+        }
         match self.screen {
             AppScreen::Explorer => {
                 if !self.explorer_items.is_empty()
@@ -599,14 +918,80 @@ impl App {
                     self.explorer_selected_index += 1;
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if !self.filtered_log_indices.is_empty()
                     && self.logs_selected_index < self.filtered_log_indices.len() - 1
                 {
                     self.logs_selected_index += 1;
                 }
             }
+            AppScreen::LogDetail => {
+                if !self.filtered_log_indices.is_empty()
+                    && self.logs_selected_index < self.filtered_log_indices.len() - 1
+                {
+                    self.logs_selected_index += 1;
+                    self.detail_scroll = 0;
+                }
+            }
         }
+    }
+
+    fn ranked_keys(counts: &BTreeMap<String, usize>) -> Vec<String> {
+        let mut entries: Vec<_> = counts.iter().collect();
+        entries.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        entries.into_iter().map(|(key, _)| key.clone()).collect()
+    }
+
+    fn select_sidebar_filter(&mut self) {
+        match self.sidebar_focus {
+            SidebarFocus::Sources => {
+                if let Some(source) = self.source_sidebar_selected_key.as_ref() {
+                    self.filter.source = Some(source.clone());
+                }
+            }
+            SidebarFocus::Contexts => {
+                if let Some(ctx) = self.ctx_sidebar_selected_key.as_ref() {
+                    self.filter.ctx_id = ctx.clone();
+                    self.filter.ctx_missing = ctx.is_none();
+                }
+            }
+            SidebarFocus::Logs => return,
+        }
+        self.sidebar_focus = SidebarFocus::Logs;
+        self.begin_filter();
+    }
+
+    fn cycle_sidebar_focus(&mut self) {
+        self.sidebar_focus = match self.sidebar_focus {
+            SidebarFocus::Logs => {
+                if let Some(selected) = self.selected_entry() {
+                    let selected_key = selected.source_identity();
+                    if let Some(position) = Self::ranked_keys(&self.source_count_cache)
+                        .iter()
+                        .position(|key| *key == selected_key)
+                    {
+                        self.source_sidebar_selected_index = position;
+                        self.source_sidebar_selected_key = Some(selected_key);
+                    }
+                }
+                SidebarFocus::Sources
+            }
+            SidebarFocus::Sources => {
+                if let Some(selected) = self.selected_entry() {
+                    let selected_ctx = selected.message.ctid.clone();
+                    if let Some(position) = self
+                        .ranked_ctx_entries()
+                        .iter()
+                        .position(|(ctx, _)| *ctx == selected_ctx)
+                    {
+                        self.ctx_sidebar_selected_index = position;
+                        self.ctx_sidebar_selected_key = Some(selected_ctx);
+                    }
+                }
+                SidebarFocus::Contexts
+            }
+            SidebarFocus::Contexts => SidebarFocus::Logs,
+        };
     }
 
     /// Move selection down by `page_size` rows (full page scroll)
@@ -622,11 +1007,14 @@ impl App {
                         (self.explorer_selected_index + page_size).min(max);
                 }
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 if !self.filtered_log_indices.is_empty() {
                     let max = self.filtered_log_indices.len() - 1;
                     self.logs_selected_index = (self.logs_selected_index + page_size).min(max);
                 }
+            }
+            AppScreen::LogDetail => {
+                self.detail_scroll = self.detail_scroll.saturating_add(page_size);
             }
         }
     }
@@ -641,8 +1029,11 @@ impl App {
                 self.explorer_selected_index =
                     self.explorer_selected_index.saturating_sub(page_size);
             }
-            AppScreen::LogViewer | AppScreen::LogDetail => {
+            AppScreen::LogViewer => {
                 self.logs_selected_index = self.logs_selected_index.saturating_sub(page_size);
+            }
+            AppScreen::LogDetail => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(page_size);
             }
         }
     }
@@ -693,7 +1084,10 @@ impl App {
                     match mode {
                         FilterInputMode::Text => self.filter.text = input,
                         FilterInputMode::AppId => self.filter.app_id = input,
-                        FilterInputMode::CtxId => self.filter.ctx_id = input,
+                        FilterInputMode::CtxId => {
+                            self.filter.ctx_id = input;
+                            self.filter.ctx_missing = false;
+                        }
                         FilterInputMode::MinLevel => {
                             let level = match self.filter_input.to_lowercase().as_str() {
                                 "f" | "fatal" => Some(crate::parser::LogLevel::Fatal),
@@ -712,7 +1106,7 @@ impl App {
                             self.filter.min_level = level;
                         }
                     }
-                    self.apply_filter();
+                    self.begin_filter();
                     if was_cleared {
                         self.info_message = Some("Filter cleared".to_string());
                     }
@@ -796,7 +1190,7 @@ impl App {
             }
             KeyCode::Char('L') if self.screen == AppScreen::LogViewer => {
                 self.load_filter_config();
-                self.apply_filter();
+                self.begin_filter();
             }
             KeyCode::Char('t') if self.screen == AppScreen::LogViewer => {
                 self.show_time_delta = !self.show_time_delta;
@@ -852,11 +1246,12 @@ impl App {
             }
             KeyCode::Char('C') if self.screen == AppScreen::LogViewer => {
                 self.filter = Filter::default();
-                self.apply_filter();
+                self.begin_filter();
             }
             KeyCode::Char('F') if self.screen == AppScreen::LogViewer => {
                 self.auto_scroll = !self.auto_scroll;
             }
+            KeyCode::Tab if self.screen == AppScreen::LogViewer => self.cycle_sidebar_focus(),
             KeyCode::Enter => {
                 if self.screen == AppScreen::Explorer {
                     // BUG-2: bounds check before accessing explorer_items
@@ -874,10 +1269,13 @@ impl App {
                             }
                         }
                     }
-                } else if self.screen == AppScreen::LogViewer
-                    && !self.filtered_log_indices.is_empty()
-                {
-                    self.screen = AppScreen::LogDetail;
+                } else if self.screen == AppScreen::LogViewer {
+                    if self.sidebar_focus != SidebarFocus::Logs {
+                        self.select_sidebar_filter();
+                    } else if !self.filtered_log_indices.is_empty() {
+                        self.screen = AppScreen::LogDetail;
+                        self.detail_scroll = 0;
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -895,7 +1293,9 @@ impl App {
     }
 
     pub fn connect_tcp(&mut self, addr: &str) {
+        self.cancel_export();
         self.logs.clear();
+        self.daemon_clock_state.clear();
         self.filtered_log_indices.clear();
         self.source_count_cache.clear();
         self.ctx_count_cache.clear();
@@ -904,6 +1304,7 @@ impl App {
         self.info_message = None;
         self.file_errors = None;
         self.load_filter_config();
+        self.begin_filter();
         self.is_loading = true;
         self.auto_scroll = true;
         self.horizontal_scroll = 0;
@@ -937,50 +1338,109 @@ impl App {
     }
 
     pub fn on_export(&mut self) {
+        if self.export_job.is_some() {
+            self.info_message = Some("An export is already in progress".to_string());
+            return;
+        }
+        if self.filter_scan_cursor.is_some() {
+            self.error_message = Some("Wait for filtering to finish before exporting".to_string());
+            return;
+        }
         if self.filtered_log_indices.is_empty() {
             self.error_message = Some("No logs to export".to_string());
             return;
         }
 
-        let now = chrono::Local::now();
-        let base = format!("dlt_export_{}", now.format("%Y%m%d_%H%M%S"));
+        let now = jiff::Zoned::now();
+        let base = format!("dlt_export_{}", now.strftime("%Y%m%d_%H%M%S"));
 
-        // SEC-2: avoid overwriting existing files by appending a suffix
-        let filename = if !std::path::Path::new(&format!("{}.txt", base)).exists() {
-            format!("{}.txt", base)
-        } else {
-            let mut i = 1;
-            loop {
-                let candidate = format!("{}_{}.txt", base, i);
-                if !std::path::Path::new(&candidate).exists() {
-                    break candidate;
+        for suffix in 0..=999 {
+            let filename = if suffix == 0 {
+                format!("{base}.txt")
+            } else {
+                format!("{base}_{suffix}.txt")
+            };
+            let path = PathBuf::from(&filename);
+            match crate::exporter::TextWriter::create_new(&path) {
+                Ok(writer) => {
+                    let count = self.filtered_log_indices.len();
+                    self.export_job = Some(ExportJob {
+                        path,
+                        indices: self.filtered_log_indices.clone(),
+                        cursor: 0,
+                        writer: Some(writer),
+                        completed: false,
+                    });
+                    self.export_progress = Some((0, count));
+                    return;
                 }
-                i += 1;
-                if i > 999 {
-                    self.error_message = Some("Too many export files".to_string());
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    self.error_message = Some(format!("Export failed: {error}"));
                     return;
                 }
             }
+        }
+
+        self.error_message = Some("Too many export files".to_string());
+    }
+
+    fn cancel_export(&mut self) {
+        if self.export_job.take().is_some() {
+            self.export_progress = None;
+            self.info_message = Some("Export cancelled because the log set changed".to_string());
+        }
+    }
+
+    fn process_export_chunk(&mut self) {
+        let Some(mut job) = self.export_job.take() else {
+            return;
         };
-
-        // Collect references to the currently filtered DltMessages
-        let filtered_logs: Vec<&crate::parser::DltMessage> = self
-            .filtered_log_indices
-            .iter()
-            .map(|&i| &self.logs[i].message)
-            .collect();
-
-        match crate::exporter::export_to_txt(&filtered_logs, &filename) {
-            Ok(_) => {
-                self.info_message = Some(format!(
-                    "Exported {} logs to {}",
-                    filtered_logs.len(),
-                    filename
-                ));
+        let end = job
+            .cursor
+            .saturating_add(MAX_LOGS_PER_TICK)
+            .min(job.indices.len());
+        for &index in &job.indices[job.cursor..end] {
+            let Some(entry) = self.logs.get(index) else {
+                self.export_progress = None;
+                self.error_message = Some("Export cancelled: log data changed".to_string());
+                return;
+            };
+            if let Err(error) = job
+                .writer
+                .as_mut()
+                .expect("active export has a writer")
+                .write_message(&entry.message)
+            {
+                self.export_progress = None;
+                self.error_message = Some(format!("Export failed: {error}"));
+                return;
             }
-            Err(e) => {
-                self.error_message = Some(format!("Export failed: {}", e));
+        }
+        job.cursor = end;
+
+        if end == job.indices.len() {
+            let count = job.indices.len();
+            let filename = job.path.display().to_string();
+            match job
+                .writer
+                .take()
+                .expect("active export has a writer")
+                .finish()
+            {
+                Ok(()) => {
+                    job.completed = true;
+                    self.export_progress = None;
+                    self.info_message = Some(format!("Exported {count} logs to {filename}"));
+                }
+                Err(error) => {
+                    self.export_progress = None;
+                    self.error_message = Some(format!("Export failed: {error}"));
+                }
             }
+        } else {
+            self.export_progress = Some((end, job.indices.len()));
+            self.export_job = Some(job);
         }
     }
 }
@@ -1144,6 +1604,31 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_orders_timestamp_domains_without_reordering_restarts() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        let mut relative_late = mock_entry(900_000, "relative late", None, 1);
+        relative_late.message.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut absolute_late = mock_entry(200, "absolute late", None, 0);
+        absolute_late.message.timestamp_domain = TimestampDomain::StorageAbsolute;
+        let mut relative_restart = mock_entry(10, "relative restart", None, 1);
+        relative_restart.message.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut absolute_early = mock_entry(100, "absolute early", None, 0);
+        absolute_early.message.timestamp_domain = TimestampDomain::StorageAbsolute;
+        app.logs = vec![
+            relative_late,
+            absolute_late,
+            relative_restart,
+            absolute_early,
+        ];
+
+        app.apply_filter();
+
+        assert_eq!(app.filtered_log_indices, vec![3, 1, 0, 2]);
+    }
+
+    #[test]
     fn test_merge_filtered_indices_interleaves_sorted_batches() {
         let mut app = App::new();
         app.logs.push(mock_entry(100, "first", None, 0));
@@ -1191,6 +1676,60 @@ mod tests {
         app.merge_filtered_indices(vec![2, 1]);
 
         assert_eq!(app.filtered_log_indices, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn test_merge_filtered_indices_preserves_selected_log() {
+        let mut app = App::new();
+        app.logs.push(mock_entry(200, "selected", None, 0));
+        app.logs.push(mock_entry(100, "earlier", None, 1));
+        app.filtered_log_indices = vec![0];
+
+        app.merge_filtered_indices(vec![1]);
+
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(
+            app.selected_entry().unwrap().message.payload_text(),
+            "selected"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual benchmark for large overlapping timestamp batches"]
+    fn benchmark_merge_filtered_indices_overlapping_ranges() {
+        use std::time::Instant;
+
+        const EXISTING: usize = 100_000;
+        const INCOMING: usize = 10_000;
+        const ITERATIONS: usize = 20;
+
+        let mut app = App::new();
+        app.logs.reserve(EXISTING + INCOMING);
+        for i in 0..EXISTING {
+            app.logs
+                .push(mock_entry((i * 2) as u64, "existing", None, 0));
+        }
+        for i in 0..INCOMING {
+            app.logs
+                .push(mock_entry((EXISTING + i * 2) as u64, "incoming", None, 1));
+        }
+        let base_indices: Vec<usize> = (0..EXISTING).collect();
+        let incoming: Vec<usize> = (EXISTING..EXISTING + INCOMING).collect();
+
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            app.filtered_log_indices.clone_from(&base_indices);
+            app.logs_selected_index = EXISTING / 2;
+            app.merge_filtered_indices(incoming.clone());
+            assert_eq!(app.filtered_log_indices.len(), EXISTING + INCOMING);
+        }
+        eprintln!(
+            "{} overlapping merges of {}+{} indices: {:?}",
+            ITERATIONS,
+            EXISTING,
+            INCOMING,
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -1245,6 +1784,155 @@ mod tests {
         assert_eq!(app.source_counts().len(), 1);
         assert_eq!(app.source_counts().get("ctx_b.dlt"), Some(&1));
         assert_eq!(app.ctx_counts().get("CTX1"), Some(&1));
+    }
+
+    #[test]
+    fn test_source_filter_distinguishes_matching_basenames() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.logs
+            .push(mock_entry(1, "first", Some("left/trace.dlt"), 0));
+        app.logs
+            .push(mock_entry(2, "second", Some("right/trace.dlt"), 1));
+        app.apply_filter();
+        assert_eq!(app.source_counts().len(), 2);
+
+        app.handle_key(make_key(KeyCode::Tab), 20);
+        app.handle_key(make_key(KeyCode::Down), 20);
+        app.handle_key(make_key(KeyCode::Enter), 20);
+
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert_eq!(
+            app.logs[app.filtered_log_indices[0]].source_identity(),
+            "right/trace.dlt"
+        );
+    }
+
+    #[test]
+    fn test_missing_context_filter_is_distinct_from_dash_context() {
+        let mut app = App::new();
+        let mut missing = mock_entry(1, "missing", None, 0);
+        missing.message.ctid = None;
+        let mut dash = mock_entry(2, "dash", None, 0);
+        dash.message.ctid = Some("-".to_string());
+        app.logs = vec![missing, dash];
+        app.screen = AppScreen::LogViewer;
+        app.apply_filter();
+
+        assert_eq!(app.ctx_missing_count, 1);
+        assert_eq!(app.ctx_counts().get("-"), Some(&1));
+
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 0;
+        app.remember_sidebar_selection();
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert!(app.logs[app.filtered_log_indices[0]].message.ctid.is_none());
+
+        app.filter = Filter::default();
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 1);
+        assert_eq!(
+            app.logs[app.filtered_log_indices[0]]
+                .message
+                .ctid
+                .as_deref(),
+            Some("-")
+        );
+    }
+
+    #[test]
+    fn test_sidebar_navigation_reaches_entries_beyond_initial_view() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..20 {
+            app.logs.push(mock_entry(
+                i as u64,
+                "entry",
+                Some(&format!("source-{i:02}.dlt")),
+                i,
+            ));
+        }
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Sources;
+        for _ in 0..19 {
+            app.on_down();
+        }
+
+        assert_eq!(app.source_sidebar_selected_index, 19);
+        app.on_down();
+        assert_eq!(app.source_sidebar_selected_index, 19);
+    }
+
+    #[test]
+    fn test_sidebar_selection_tracks_identity_when_counts_change() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        for i in 0..10 {
+            let mut entry = mock_entry(i, "source A", Some("source-a.dlt"), 0);
+            entry.message.ctid = Some("CTX_A".to_string());
+            app.logs.push(entry);
+        }
+        for i in 0..9 {
+            let mut entry = mock_entry(10 + i, "source B", Some("source-b.dlt"), 1);
+            entry.message.ctid = Some("CTX_B".to_string());
+            app.logs.push(entry);
+        }
+        app.apply_filter();
+
+        app.sidebar_focus = SidebarFocus::Sources;
+        app.source_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.ctx_sidebar_selected_index = 1;
+        app.remember_sidebar_selection();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..2 {
+            let mut entry = mock_entry(20 + i, "source B new", Some("source-b.dlt"), 1);
+            entry.message.ctid = Some("CTX_B".to_string());
+            tx.send(entry).unwrap();
+        }
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.on_tick();
+
+        assert_eq!(app.source_sidebar_selected_index, 0);
+        assert_eq!(app.ctx_sidebar_selected_index, 0);
+        assert_eq!(
+            app.source_sidebar_selected_key.as_deref(),
+            Some("source-b.dlt")
+        );
+        assert_eq!(
+            app.ctx_sidebar_selected_key,
+            Some(Some("CTX_B".to_string()))
+        );
+        app.sidebar_focus = SidebarFocus::Contexts;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 11);
+        assert!(app.filtered_log_indices.iter().all(|&idx| {
+            app.logs[idx].message.ctid.as_deref() == Some("CTX_B")
+                && app.logs[idx].source_name() == "source-b.dlt"
+        }));
+
+        app.filter = Filter::default();
+        app.apply_filter();
+        app.sidebar_focus = SidebarFocus::Sources;
+        app.select_sidebar_filter();
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices.len(), 11);
+        assert!(
+            app.filtered_log_indices
+                .iter()
+                .all(|&idx| { app.logs[idx].source_name() == "source-b.dlt" })
+        );
     }
 
     // ==================== Page scrolling tests ====================
@@ -1607,6 +2295,20 @@ mod tests {
         assert_eq!(app.horizontal_scroll, 0, "Should clamp at 0");
     }
 
+    #[test]
+    fn test_detail_page_keys_scroll_content_and_reset_on_log_change() {
+        let mut app = build_mock_app_with_logs(3);
+        app.screen = AppScreen::LogDetail;
+
+        app.on_page_down(5);
+        assert_eq!(app.detail_scroll, 5);
+        app.on_page_up(2);
+        assert_eq!(app.detail_scroll, 3);
+        app.on_down();
+        assert_eq!(app.logs_selected_index, 1);
+        assert_eq!(app.detail_scroll, 0);
+    }
+
     // ==================== Bug verification tests ====================
 
     fn make_key(code: KeyCode) -> KeyEvent {
@@ -1919,7 +2621,7 @@ mod tests {
         assert_eq!(app.logs.len(), MAX_LOGS_PER_TICK);
         assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
         assert_eq!(app.source_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
-        assert_eq!(app.ctx_counts().get("-"), Some(&MAX_LOGS_PER_TICK));
+        assert_eq!(app.ctx_missing_count, MAX_LOGS_PER_TICK);
         assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK - 1);
         assert!(app.log_receiver.is_some());
         assert!(app.is_loading);
@@ -1929,10 +2631,159 @@ mod tests {
         assert_eq!(app.logs.len(), total);
         assert_eq!(app.filtered_log_indices.len(), total);
         assert_eq!(app.source_counts().get("-"), Some(&total));
-        assert_eq!(app.ctx_counts().get("-"), Some(&total));
+        assert_eq!(app.ctx_missing_count, total);
         assert_eq!(app.logs_selected_index, total - 1);
         assert!(app.log_receiver.is_none());
         assert!(!app.is_loading);
+    }
+
+    #[test]
+    fn test_filter_scan_processes_large_logs_incrementally() {
+        let mut app = App::new();
+        app.auto_scroll = true;
+        for i in 0..(MAX_LOGS_PER_TICK * 2 + 1) {
+            app.logs.push(mock_entry(i as u64, "message", None, 0));
+        }
+
+        app.begin_filter();
+        assert!(app.filtered_log_indices.is_empty());
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK);
+        assert!(app.filter_scan_cursor.is_some());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK - 1);
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2);
+        assert!(app.filter_scan_cursor.is_some());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK * 2 - 1);
+
+        app.on_tick();
+        assert_eq!(app.filtered_log_indices.len(), MAX_LOGS_PER_TICK * 2 + 1);
+        assert!(app.filter_scan_cursor.is_none());
+        assert_eq!(app.logs_selected_index, MAX_LOGS_PER_TICK * 2);
+    }
+
+    #[test]
+    fn test_daemon_restart_epoch_survives_filtering_out_boundary_log() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (timestamp, payload) in [
+            (100, "keep before"),
+            (200, "hide boundary"),
+            (5, "keep after"),
+        ] {
+            let mut entry = mock_entry(timestamp, payload, None, 0);
+            entry.message.timestamp_domain = TimestampDomain::DaemonRelative;
+            tx.send(entry).unwrap();
+        }
+        drop(tx);
+        app.log_receiver = Some(rx);
+        app.on_tick();
+
+        assert_eq!(
+            app.logs
+                .iter()
+                .map(|entry| entry.daemon_epoch)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1]
+        );
+        app.filter.text = Some("keep".to_string());
+        app.apply_filter();
+        assert_eq!(app.filtered_log_indices, vec![0, 2]);
+        assert_ne!(
+            app.logs[app.filtered_log_indices[0]].daemon_epoch,
+            app.logs[app.filtered_log_indices[1]].daemon_epoch
+        );
+    }
+
+    #[test]
+    fn test_wrap_history_survives_hidden_boundary() {
+        let mut app = App::new();
+        let mut state = BTreeMap::new();
+        for ticks in [100, u32::MAX as u64, 200] {
+            let mut entry = mock_entry(ticks * 100, "message", None, 0);
+            entry.message.timestamp_domain = crate::parser::TimestampDomain::DaemonRelative;
+            App::record_daemon_epoch(&mut state, &mut entry);
+            app.logs.push(entry);
+        }
+        assert_eq!(app.logs[2].daemon_epoch, 0);
+        assert_eq!(
+            app.logs[2].daemon_wrap_offset + app.logs[2].message.timestamp_us
+                - app.logs[0].message.timestamp_us,
+            429_496_739_600
+        );
+    }
+
+    #[test]
+    fn test_detail_home_end_reset_scroll() {
+        let mut app = build_mock_app_with_logs(3);
+        app.screen = AppScreen::LogDetail;
+        app.logs_selected_index = 1;
+        app.detail_scroll = 20;
+        app.on_home();
+        assert_eq!((app.logs_selected_index, app.detail_scroll), (0, 0));
+        app.detail_scroll = 20;
+        app.on_end();
+        assert_eq!((app.logs_selected_index, app.detail_scroll), (2, 0));
+    }
+
+    #[test]
+    fn test_export_writes_logs_incrementally_and_finishes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("export.txt");
+        let mut app = App::new();
+        for i in 0..(MAX_LOGS_PER_TICK + 1) {
+            app.logs.push(mock_entry(i as u64, "exported", None, 0));
+        }
+        let indices: Vec<usize> = (0..app.logs.len()).collect();
+        let writer = crate::exporter::TextWriter::create_new(&path).unwrap();
+        app.export_job = Some(ExportJob {
+            path: path.clone(),
+            indices,
+            cursor: 0,
+            writer: Some(writer),
+            completed: false,
+        });
+        app.export_progress = Some((0, MAX_LOGS_PER_TICK + 1));
+        app.screen = AppScreen::LogViewer;
+        app.filtered_log_indices = (0..app.logs.len()).collect();
+
+        app.on_tick();
+        assert_eq!(app.export_job.as_ref().unwrap().cursor, MAX_LOGS_PER_TICK);
+        assert_eq!(
+            app.export_progress,
+            Some((MAX_LOGS_PER_TICK, MAX_LOGS_PER_TICK + 1))
+        );
+        assert!(app.info_message.is_none());
+        app.handle_key(make_key(KeyCode::Down), 20);
+        assert_eq!(app.logs_selected_index, 1);
+
+        app.on_tick();
+        assert!(app.export_job.is_none());
+        assert_eq!(app.export_progress, None);
+        assert!(app.info_message.as_deref().unwrap().starts_with("Exported"));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap().lines().count(),
+            MAX_LOGS_PER_TICK + 2
+        );
+    }
+
+    #[test]
+    fn test_export_rejects_incomplete_filter_results() {
+        let mut app = App::new();
+        app.filtered_log_indices = vec![0];
+        app.filter_scan_cursor = Some(1);
+
+        app.on_export();
+
+        assert!(app.export_job.is_none());
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Wait for filtering to finish before exporting")
+        );
     }
 
     #[test]

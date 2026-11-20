@@ -12,6 +12,14 @@ pub enum LogLevel {
     Unknown(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestampDomain {
+    StorageAbsolute,
+    DaemonRelative,
+    Missing,
+    Unspecified,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PayloadTextFormat {
     Plain,
@@ -21,6 +29,7 @@ enum PayloadTextFormat {
 #[derive(Debug, Clone)]
 pub struct DltMessage {
     pub timestamp_us: u64,
+    pub timestamp_domain: TimestampDomain,
     pub ecu_id: String,
     pub apid: Option<String>,
     pub ctid: Option<String>,
@@ -41,6 +50,7 @@ impl DltMessage {
     ) -> Self {
         Self {
             timestamp_us,
+            timestamp_domain: TimestampDomain::Unspecified,
             ecu_id,
             apid,
             ctid,
@@ -56,6 +66,11 @@ impl DltMessage {
         self
     }
 
+    fn with_timestamp_domain(mut self, domain: TimestampDomain) -> Self {
+        self.timestamp_domain = domain;
+        self
+    }
+
     pub fn payload_text(&self) -> &str {
         self.payload_text
             .get_or_init(|| match self.payload_text_format {
@@ -67,7 +82,7 @@ impl DltMessage {
                     if decoded.is_empty() {
                         sanitize_payload_text(&self.payload_raw).into_boxed_str()
                     } else {
-                        decoded.into_boxed_str()
+                        sanitize_display_text(&decoded).into_boxed_str()
                     }
                 }
             })
@@ -87,6 +102,7 @@ impl DltMessage {
 impl PartialEq for DltMessage {
     fn eq(&self, other: &Self) -> bool {
         self.timestamp_us == other.timestamp_us
+            && self.timestamp_domain == other.timestamp_domain
             && self.ecu_id == other.ecu_id
             && self.apid == other.apid
             && self.ctid == other.ctid
@@ -197,14 +213,14 @@ fn read_i64_at(data: &[u8], pos: usize, byte_len: usize, msbf: bool) -> i64 {
     }
 }
 
-fn tyle_to_byte_len(tyle: u32) -> usize {
+fn tyle_to_byte_len(tyle: u32) -> Option<usize> {
     match tyle {
-        1 => 1,
-        2 => 2,
-        3 => 4,
-        4 => 8,
-        5 => 16,
-        _ => 4,
+        1 => Some(1),
+        2 => Some(2),
+        3 => Some(4),
+        4 => Some(8),
+        5 => Some(16),
+        _ => None,
     }
 }
 
@@ -231,6 +247,20 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
         let is_strg = (type_info >> 9) & 1 == 1;
         let is_rawd = (type_info >> 10) & 1 == 1;
         let is_vari = (type_info >> 11) & 1 == 1;
+
+        let supported = match (is_bool, is_sint, is_uint, is_float, is_strg, is_rawd) {
+            (true, false, false, false, false, false) => tyle == 1,
+            (false, true, false, false, false, false) => (1..=4).contains(&tyle),
+            (false, false, true, false, false, false) => (1..=5).contains(&tyle),
+            (false, false, false, true, false, false) => matches!(tyle, 3 | 4),
+            (false, false, false, false, true, false)
+            | (false, false, false, false, false, true) => tyle == 0,
+            _ => false,
+        };
+        if !supported {
+            parts.push(format!("<unsupported TYLE={tyle} type>"));
+            break;
+        }
 
         // Skip VARI (variable info: name + optional unit) — bounds-checked.
         // Numeric arguments encode both lengths before either string:
@@ -291,7 +321,7 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(if payload[pos] != 0 { "true" } else { "false" }.to_string());
             pos += 1;
         } else if is_uint {
-            let byte_len = tyle_to_byte_len(tyle);
+            let byte_len = tyle_to_byte_len(tyle).expect("validated UINT TYLE");
             if pos + byte_len > payload.len() {
                 break;
             }
@@ -309,7 +339,7 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
             parts.push(val.to_string());
             pos += byte_len;
         } else if is_sint {
-            let byte_len = tyle_to_byte_len(tyle).min(8); // sint has no 128-bit
+            let byte_len = tyle_to_byte_len(tyle).expect("validated SINT TYLE");
             if pos + byte_len > payload.len() {
                 break;
             }
@@ -354,8 +384,11 @@ fn decode_verbose_payload(payload: &[u8], noar: u8, msbf: bool) -> String {
 
 /// Sanitize raw bytes into displayable text, replacing control chars with '.'
 fn sanitize_payload_text(payload_bytes: &[u8]) -> String {
-    String::from_utf8_lossy(payload_bytes)
-        .chars()
+    sanitize_display_text(&String::from_utf8_lossy(payload_bytes))
+}
+
+fn sanitize_display_text(text: &str) -> String {
+    text.chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
                 '.'
@@ -374,6 +407,11 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
     // 1. Storage Header (16 bytes: "DLT\x01" + timestamp_sec(4 LE) + timestamp_us(4 LE) + ecu_id(4))
     //    If not present, fall back to parsing as a raw standard header (for TCP streams).
     let has_storage_header = input.starts_with(b"DLT\x01");
+    let mut timestamp_domain = if has_storage_header {
+        TimestampDomain::StorageAbsolute
+    } else {
+        TimestampDomain::Missing
+    };
     let (input, mut timestamp_us, storage_ecu_id) = if has_storage_header {
         match parse_storage_header(input) {
             Ok((remaining, (ts, ecu))) => (remaining, ts, ecu),
@@ -474,6 +512,7 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         if !has_storage_header {
             let ticks = u32::from_be_bytes([tms[0], tms[1], tms[2], tms[3]]);
             timestamp_us = u64::from(ticks) * 100;
+            timestamp_domain = TimestampDomain::DaemonRelative;
         }
         consumed_extra += 4;
     }
@@ -545,7 +584,8 @@ pub fn parse_dlt_message(input: &[u8]) -> Result<(&[u8], DltMessage), ParseError
         msg_ctid,
         msg_log_level,
         payload_bytes.to_vec(),
-    );
+    )
+    .with_timestamp_domain(timestamp_domain);
     if is_verbose && noar > 0 {
         message = message.with_verbose_payload(noar, msbf);
     }
@@ -598,19 +638,6 @@ pub(crate) fn find_next_complete_message(data: &[u8]) -> Option<usize> {
     }
 
     None
-}
-
-/// Finds a complete storage-framed message using its strong magic marker.
-/// Streaming recovery uses this while more bytes may still arrive so a raw
-/// frame embedded in an incomplete payload is not mistaken for a boundary.
-pub(crate) fn find_next_complete_storage_message(data: &[u8]) -> Option<usize> {
-    data.windows(4).enumerate().find_map(|(index, window)| {
-        if window == b"DLT\x01" && parse_dlt_message(&data[index..]).is_ok() {
-            Some(index)
-        } else {
-            None
-        }
-    })
 }
 
 /// Parse all DLT messages from a byte buffer with error recovery.
@@ -785,6 +812,7 @@ mod tests {
         assert_eq!(msg.apid, Some("APP1".to_string()));
         assert_eq!(msg.ctid, Some("CTX1".to_string()));
         assert_eq!(msg.log_level, Some(LogLevel::Info));
+        assert_eq!(msg.timestamp_domain, TimestampDomain::StorageAbsolute);
         assert_eq!(msg.payload_text(), "Hello DLT");
         assert!(msg.payload_text_is_initialized());
 
@@ -807,12 +835,37 @@ mod tests {
     }
 
     #[test]
+    fn test_verbose_string_replaces_terminal_control_characters() {
+        let payload = build_verbose_string_arg("before\x1b[31mafter\x07");
+        let data = build_verbose_message(&payload);
+
+        let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
+        assert_eq!(msg.payload_text(), "before.[31mafter.");
+    }
+
+    #[test]
     fn test_parse_verbose_uint_message() {
         let payload = build_verbose_uint32_arg(42);
         let data = build_verbose_message(&payload);
 
         let (_, msg) = parse_dlt_message(&data).expect("Parsing failed");
         assert_eq!(msg.payload_text(), "42");
+    }
+
+    #[test]
+    fn test_verbose_decoder_stops_at_unsupported_tyle_without_shifting() {
+        for type_info in [0x0000_0040u32, 0x0000_0082, 0x0000_0063] {
+            let mut payload = type_info.to_le_bytes().to_vec();
+            payload.extend_from_slice(&[0x01; 16]);
+            payload.extend(build_verbose_string_arg("must not be decoded"));
+
+            let data = build_verbose_message(&payload);
+            let (_, message) = parse_dlt_message(&data).expect("Parsing failed");
+            assert_eq!(
+                message.payload_text(),
+                format!("<unsupported TYLE={} type>", type_info & 0x0f)
+            );
+        }
     }
 
     #[test]
@@ -1354,6 +1407,7 @@ mod tests {
             parsed.timestamp_us, 0,
             "No timestamp without storage header"
         );
+        assert_eq!(parsed.timestamp_domain, TimestampDomain::Missing);
         assert_eq!(
             parsed.ecu_id, "",
             "No ECU ID without storage header or WEID"
@@ -1410,6 +1464,7 @@ mod tests {
 
         assert!(remaining.is_empty());
         assert_eq!(parsed.timestamp_us, 123_456_700);
+        assert_eq!(parsed.timestamp_domain, TimestampDomain::DaemonRelative);
         assert_eq!(parsed.payload_text(), "Hello");
     }
 }

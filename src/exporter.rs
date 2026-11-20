@@ -1,16 +1,28 @@
 use crate::parser::DltMessage;
-use crate::ui::format_timestamp;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use crate::ui::format_message_timestamp;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 
-/// Exports a slice of DltMessage references to a text file.
-pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+pub struct TextWriter {
+    file: BufWriter<File>,
+}
 
-    // Write a simple header
-    writeln!(file, "Timestamp, ECU, APP, CTX, Level, Payload")?;
+impl TextWriter {
+    pub fn create_new(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut writer = Self {
+            file: BufWriter::new(file),
+        };
+        if let Err(error) = writeln!(writer.file, "Timestamp, ECU, APP, CTX, Level, Payload") {
+            drop(writer);
+            let _ = std::fs::remove_file(path);
+            return Err(error);
+        }
+        Ok(writer)
+    }
 
-    for log in logs {
+    pub fn write_message(&mut self, log: &DltMessage) -> io::Result<()> {
         let level_str = match &log.log_level {
             Some(crate::parser::LogLevel::Fatal) => "FTL",
             Some(crate::parser::LogLevel::Error) => "ERR",
@@ -23,18 +35,29 @@ pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
         };
 
         writeln!(
-            file,
+            self.file,
             "{} [{}] [{}] [{}] [{}] {}",
-            format_timestamp(log.timestamp_us),
+            format_message_timestamp(log),
             log.ecu_id,
             log.apid.as_deref().unwrap_or("-"),
             log.ctid.as_deref().unwrap_or("-"),
             level_str,
             log.payload_text()
-        )?;
+        )
     }
 
-    Ok(())
+    pub fn finish(mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Exports a slice of DltMessage references to a text file.
+pub fn export_to_txt(logs: &[&DltMessage], path: &str) -> io::Result<()> {
+    let mut writer = TextWriter::create_new(Path::new(path))?;
+    for log in logs {
+        writer.write_message(log)?;
+    }
+    writer.finish()
 }
 
 #[cfg(test)]

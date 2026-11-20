@@ -6,7 +6,7 @@ use ratatui::{
 };
 use std::ops::Range;
 
-use crate::app::{App, AppScreen};
+use crate::app::{App, AppScreen, SidebarFocus};
 
 pub fn format_timestamp(us: u64) -> String {
     let total_secs = us / 1_000_000;
@@ -15,6 +15,63 @@ pub fn format_timestamp(us: u64) -> String {
     let minutes = (total_secs / 60) % 60;
     let seconds = total_secs % 60;
     format!("{:02}:{:02}:{:02}.{:06}", hours, minutes, seconds, micros)
+}
+
+pub fn format_message_timestamp(message: &crate::parser::DltMessage) -> String {
+    use crate::parser::TimestampDomain;
+
+    match message.timestamp_domain {
+        TimestampDomain::StorageAbsolute => format_timestamp(message.timestamp_us),
+        TimestampDomain::DaemonRelative => format!("T+{} ticks", message.timestamp_us / 100),
+        TimestampDomain::Missing => "N/A".to_string(),
+        TimestampDomain::Unspecified if message.timestamp_us == 0 => "N/A".to_string(),
+        TimestampDomain::Unspecified => format_timestamp(message.timestamp_us),
+    }
+}
+
+fn format_delta_time(
+    current: &crate::parser::DltMessage,
+    previous: Option<&crate::parser::DltMessage>,
+    same_source: bool,
+    same_daemon_epoch: bool,
+) -> String {
+    use crate::parser::TimestampDomain;
+
+    let Some(previous) = previous else {
+        return if matches!(current.timestamp_domain, TimestampDomain::Missing)
+            || (current.timestamp_domain == TimestampDomain::Unspecified
+                && current.timestamp_us == 0)
+        {
+            "N/A".to_string()
+        } else {
+            "+0.000000s".to_string()
+        };
+    };
+    if current.timestamp_domain != previous.timestamp_domain {
+        return "N/A".to_string();
+    }
+
+    let delta = match current.timestamp_domain {
+        TimestampDomain::Missing => None,
+        TimestampDomain::DaemonRelative if same_source && same_daemon_epoch => {
+            if current.timestamp_us >= previous.timestamp_us {
+                Some(current.timestamp_us - previous.timestamp_us)
+            } else {
+                const WRAP_PERIOD_US: u64 = (u32::MAX as u64 + 1) * 100;
+                let backwards = previous.timestamp_us - current.timestamp_us;
+                (backwards > WRAP_PERIOD_US / 2)
+                    .then_some(WRAP_PERIOD_US - previous.timestamp_us + current.timestamp_us)
+            }
+        }
+        TimestampDomain::DaemonRelative => None,
+        TimestampDomain::StorageAbsolute | TimestampDomain::Unspecified => {
+            Some(current.timestamp_us.abs_diff(previous.timestamp_us))
+        }
+    };
+    match delta {
+        Some(delta) => format!("+{}.{:06}s", delta / 1_000_000, delta % 1_000_000),
+        None => "N/A".to_string(),
+    }
 }
 
 fn ctx_color(ctx: &str) -> Color {
@@ -157,37 +214,39 @@ pub fn draw(f: &mut Frame, app: &App) {
                 };
 
                 let time_str = if app.show_time_delta {
-                    if i == 0 {
-                        // BUG-3: if timestamp is 0 (no storage header), show N/A
-                        if log.timestamp_us == 0 {
-                            "N/A".to_string()
-                        } else {
-                            "+0.000000s".to_string()
-                        }
+                    let previous = i.checked_sub(1).map(|previous_i| {
+                        let previous_idx = app.filtered_log_indices[previous_i];
+                        let previous_entry = &app.logs[previous_idx];
+                        (
+                            &previous_entry.message,
+                            previous_entry.source_index == entry.source_index,
+                            previous_entry.daemon_epoch == entry.daemon_epoch,
+                        )
+                    });
+                    if log.timestamp_domain == crate::parser::TimestampDomain::DaemonRelative
+                        && previous.is_some_and(|(message, source, epoch)| {
+                            message.timestamp_domain
+                                == crate::parser::TimestampDomain::DaemonRelative
+                                && source
+                                && epoch
+                        })
+                        && entry.daemon_wrap_offset > 0
+                    {
+                        let prior = &app.logs[app.filtered_log_indices[i - 1]];
+                        let delta = (log.timestamp_us as u128 + entry.daemon_wrap_offset as u128)
+                            - (prior.message.timestamp_us as u128
+                                + prior.daemon_wrap_offset as u128);
+                        format!("+{}.{:06}s", delta / 1_000_000, delta % 1_000_000)
                     } else {
-                        let prev_idx = app.filtered_log_indices[i - 1];
-                        let prev_log = &app.logs[prev_idx].message;
-                        // BUG-3: if either timestamp is 0, delta is meaningless
-                        if log.timestamp_us == 0 || prev_log.timestamp_us == 0 {
-                            "N/A".to_string()
-                        } else {
-                            let is_negative = log.timestamp_us < prev_log.timestamp_us;
-                            let diff_abs = if is_negative {
-                                prev_log.timestamp_us - log.timestamp_us
-                            } else {
-                                log.timestamp_us - prev_log.timestamp_us
-                            };
-                            let sign = if is_negative { "-" } else { "+" };
-                            format!(
-                                "{}{}.{:06}s",
-                                sign,
-                                diff_abs / 1_000_000,
-                                diff_abs % 1_000_000
-                            )
-                        }
+                        format_delta_time(
+                            log,
+                            previous.as_ref().map(|(message, _, _)| *message),
+                            previous.is_some_and(|(_, same_source, _)| same_source),
+                            previous.is_some_and(|(_, _, same_epoch)| same_epoch),
+                        )
                     }
                 } else {
-                    format_timestamp(log.timestamp_us)
+                    format_message_timestamp(log)
                 };
 
                 let cells = vec![
@@ -197,7 +256,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                     ratatui::widgets::Cell::from(log.apid.as_deref().unwrap_or("-")),
                     ratatui::widgets::Cell::from(log.ctid.as_deref().unwrap_or("-"))
                         .style(Style::default().fg(ctx_color(log.ctid.as_deref().unwrap_or("-")))),
-                    ratatui::widgets::Cell::from(entry.source_name()),
+                    ratatui::widgets::Cell::from(entry.source_identity()),
                     ratatui::widgets::Cell::from(payload_display),
                 ];
                 ratatui::widgets::Row::new(cells).height(1)
@@ -247,13 +306,14 @@ pub fn draw(f: &mut Frame, app: &App) {
                     .split(chunks[0]);
 
                 let meta_text = format!(
-                    "Timestamp: {} ({} μs)\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nSource: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
-                    format_timestamp(log.timestamp_us),
+                    "Timestamp: {} ({} μs, {:?})\nECU ID: {}\nAPP ID: {}\nCTX ID: {}\nSource: {}\nLevel: {:?}\n\nPayload Default Text: \n{}",
+                    format_message_timestamp(log),
                     log.timestamp_us,
+                    log.timestamp_domain,
                     log.ecu_id,
                     log.apid.as_deref().unwrap_or("-"),
                     log.ctid.as_deref().unwrap_or("-"),
-                    entry.source_name(),
+                    entry.source_identity(),
                     log.log_level,
                     log.payload_text()
                 );
@@ -264,10 +324,22 @@ pub fn draw(f: &mut Frame, app: &App) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Cyan)),
                 );
-                f.render_widget(meta_para, detail_chunks[0]);
+                f.render_widget(
+                    meta_para.scroll((app.detail_scroll.min(u16::MAX as usize) as u16, 0)),
+                    detail_chunks[0],
+                );
 
+                let payload = log.payload_raw();
+                let total_rows = payload.len().div_ceil(16);
+                let visible_rows = detail_chunks[1].height.saturating_sub(2) as usize;
+                let start_row = app
+                    .detail_scroll
+                    .min(total_rows.saturating_sub(visible_rows));
+                let end_row = (start_row + visible_rows).min(total_rows);
                 let mut hex_lines = String::new();
-                for chunk in log.payload_raw().chunks(16) {
+                for row in start_row..end_row {
+                    let start_byte = row * 16;
+                    let chunk = &payload[start_byte..(start_byte + 16).min(payload.len())];
                     let hex_parts: Vec<String> =
                         chunk.iter().map(|b| format!("{:02X}", b)).collect();
                     let char_parts: String = chunk
@@ -286,14 +358,19 @@ pub fn draw(f: &mut Frame, app: &App) {
                         hex_padded.push(' ');
                     }
 
-                    hex_lines.push_str(&format!("{}  |{}\n", hex_padded, char_parts));
+                    hex_lines.push_str(&format!(
+                        "{:08X}  {}  |{}\n",
+                        start_byte, hex_padded, char_parts
+                    ));
                 }
 
                 let hex_para = Paragraph::new(hex_lines).block(
                     Block::default()
                         .title(format!(
-                            "Payload Hex Dump ({} bytes)",
-                            log.payload_raw().len()
+                            "Payload Hex Dump ({} bytes, rows {}-{})",
+                            payload.len(),
+                            if end_row == 0 { 0 } else { start_row + 1 },
+                            end_row
                         ))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Magenta)),
@@ -392,6 +469,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         (string, Style::default())
     };
 
+    let status_str = if let Some((done, total)) = app.export_progress {
+        format!("{status_str} | Export: {done}/{total}")
+    } else {
+        status_str
+    };
     let status = Paragraph::new(status_str)
         .style(status_style)
         .block(Block::default().title("Status").borders(Borders::ALL));
@@ -413,38 +495,59 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(area);
-    let selected_source = app.selected_entry().map(|entry| entry.source_name());
+    let selected_source = app.selected_entry().map(|entry| entry.source_identity());
     let selected_ctx = app
         .selected_entry()
-        .and_then(|entry| entry.message.ctid.as_deref())
-        .unwrap_or("-");
+        .and_then(|entry| entry.message.ctid.clone());
 
     let source_capacity = sidebar_chunks[0].height.saturating_sub(2) as usize;
     let mut source_counts: Vec<_> = app.source_counts().iter().collect();
     source_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let source_items = source_counts
-        .into_iter()
-        .take(source_capacity)
-        .map(|(source, count)| {
-            let marker = if Some(source.as_str()) == selected_source {
-                ">"
+    let source_range = visible_sidebar_range(
+        source_counts.len(),
+        app.source_sidebar_selected_index,
+        source_capacity,
+    );
+    let source_items: Vec<_> = source_counts
+        .iter()
+        .enumerate()
+        .skip(source_range.start)
+        .take(source_range.len())
+        .map(|(index, (source, count))| {
+            let selected = if app.sidebar_focus == SidebarFocus::Sources {
+                index == app.source_sidebar_selected_index
             } else {
-                " "
+                Some(source.as_str()) == selected_source.as_deref()
             };
+            let marker = if selected { ">" } else { " " };
             ListItem::new(format!("{} {:>5} {}", marker, count, source))
-        });
+        })
+        .collect();
 
     let ctx_capacity = sidebar_chunks[1].height.saturating_sub(2) as usize;
-    let mut ctx_counts: Vec<_> = app.ctx_counts().iter().collect();
-    ctx_counts.sort_unstable_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let ctx_items = ctx_counts
-        .into_iter()
-        .take(ctx_capacity)
-        .map(|(ctx, count)| {
-            let marker = if ctx == selected_ctx { ">" } else { " " };
-            ListItem::new(format!("{} {:>5} {}", marker, count, ctx))
-                .style(Style::default().fg(ctx_color(ctx)))
-        });
+    let ctx_counts = app.ranked_ctx_entries();
+    let ctx_range = visible_sidebar_range(
+        ctx_counts.len(),
+        app.ctx_sidebar_selected_index,
+        ctx_capacity,
+    );
+    let ctx_items: Vec<_> = ctx_counts
+        .iter()
+        .enumerate()
+        .skip(ctx_range.start)
+        .take(ctx_range.len())
+        .map(|(index, (ctx, count))| {
+            let label = ctx.as_deref().unwrap_or("-");
+            let selected = if app.sidebar_focus == SidebarFocus::Contexts {
+                index == app.ctx_sidebar_selected_index
+            } else {
+                ctx == &selected_ctx
+            };
+            let marker = if selected { ">" } else { " " };
+            ListItem::new(format!("{} {:>5} {}", marker, count, label))
+                .style(Style::default().fg(ctx_color(label)))
+        })
+        .collect();
 
     let sources = List::new(source_items).block(
         Block::default()
@@ -452,7 +555,14 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)),
     );
-    f.render_widget(sources, sidebar_chunks[0]);
+    let mut source_state = ratatui::widgets::ListState::default();
+    if app.sidebar_focus == SidebarFocus::Sources && source_capacity > 0 {
+        source_state.select(Some(
+            app.source_sidebar_selected_index
+                .saturating_sub(source_range.start),
+        ));
+    }
+    f.render_stateful_widget(sources, sidebar_chunks[0], &mut source_state);
 
     let contexts = List::new(ctx_items).block(
         Block::default()
@@ -460,7 +570,23 @@ fn draw_context_sidebar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta)),
     );
-    f.render_widget(contexts, sidebar_chunks[1]);
+    let mut ctx_state = ratatui::widgets::ListState::default();
+    if app.sidebar_focus == SidebarFocus::Contexts && ctx_capacity > 0 {
+        ctx_state.select(Some(
+            app.ctx_sidebar_selected_index
+                .saturating_sub(ctx_range.start),
+        ));
+    }
+    f.render_stateful_widget(contexts, sidebar_chunks[1], &mut ctx_state);
+}
+
+fn visible_sidebar_range(len: usize, selected: usize, capacity: usize) -> Range<usize> {
+    if len == 0 || capacity == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(len - 1);
+    let start = selected.saturating_sub(capacity - 1);
+    start..(start + capacity).min(len)
 }
 
 #[cfg(test)]
@@ -601,6 +727,75 @@ mod tests {
     }
 
     #[test]
+    fn test_timestamp_formatting_and_deltas_respect_clock_domains() {
+        use crate::parser::TimestampDomain;
+
+        let mut relative = DltMessage::new(12_300, "ECU1".into(), None, None, None, vec![]);
+        relative.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_eq!(format_message_timestamp(&relative), "T+123 ticks");
+
+        let mut absolute = DltMessage::new(10_000, "ECU1".into(), None, None, None, vec![]);
+        absolute.timestamp_domain = TimestampDomain::StorageAbsolute;
+        assert_eq!(
+            format_delta_time(&relative, Some(&absolute), true, true),
+            "N/A"
+        );
+
+        let previous_wrap = u64::from(u32::MAX - 10) * 100;
+        let mut previous = DltMessage::new(previous_wrap, "ECU1".into(), None, None, None, vec![]);
+        previous.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut wrapped = DltMessage::new(1_200, "ECU1".into(), None, None, None, vec![]);
+        wrapped.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_ne!(
+            format_delta_time(&wrapped, Some(&previous), true, true),
+            "N/A"
+        );
+
+        let mut restarted = DltMessage::new(1_000, "ECU1".into(), None, None, None, vec![]);
+        restarted.timestamp_domain = TimestampDomain::DaemonRelative;
+        assert_eq!(
+            format_delta_time(&restarted, Some(&relative), true, false),
+            "N/A"
+        );
+    }
+
+    #[test]
+    fn test_wrap_delta_rendering_rejects_mixed_timestamp_domains() {
+        use crate::parser::TimestampDomain;
+
+        let mut app = App::new();
+        app.screen = AppScreen::LogViewer;
+        app.show_time_delta = true;
+        let mut absolute = DltMessage::new(
+            1_700_000_000_000_000,
+            "ECU1".into(),
+            None,
+            None,
+            None,
+            vec![],
+        );
+        absolute.timestamp_domain = TimestampDomain::StorageAbsolute;
+        let mut relative = DltMessage::new(
+            20_000,
+            "ECU1".into(),
+            None,
+            None,
+            None,
+            b"relative".to_vec(),
+        );
+        relative.timestamp_domain = TimestampDomain::DaemonRelative;
+        let mut entry = LogEntry::new(relative, None, 0);
+        entry.daemon_wrap_offset = (u32::MAX as u64 + 1) * 100;
+        app.logs = vec![LogEntry::new(absolute, None, 0), entry];
+        app.filtered_log_indices = vec![0, 1];
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("N/A"), "{text}");
+        assert!(text.contains("relative"), "{text}");
+    }
+
+    #[test]
     fn test_log_viewer_only_renders_selected_window() {
         let mut app = App::new();
         app.screen = AppScreen::LogViewer;
@@ -678,6 +873,28 @@ mod tests {
             text.contains("GPS fix acquired"),
             "Should show payload text"
         );
+    }
+
+    #[test]
+    fn test_log_detail_renders_only_scrolled_hex_rows() {
+        let mut app = App::new();
+        app.screen = AppScreen::LogDetail;
+        app.logs.push(LogEntry::new(
+            DltMessage::new(1, "ECU1".to_string(), None, None, None, vec![b'A'; 4096]),
+            None,
+            0,
+        ));
+        app.apply_filter();
+        app.detail_scroll = 20;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let text = buffer_to_string(&terminal);
+        assert!(text.contains("00000140"), "{text}");
+        assert!(!text.contains("00000000"), "{text}");
+        assert!(text.contains("rows 21-"), "{text}");
     }
 
     #[test]

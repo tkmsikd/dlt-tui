@@ -143,18 +143,16 @@ where
                     }
                 }
                 Err(parser::ParseError::Incomplete(_)) => {
-                    // A corrupt header can claim a huge body and hide a later
-                    // message. While the stream is open, only the strong
-                    // storage magic is safe enough to resync; at EOF, a
-                    // complete raw frame can also be salvaged without racing
-                    // a still-arriving outer payload.
-                    let recovery_pos = remaining.get(1..).and_then(|tail| {
-                        if reached_eof {
-                            parser::find_next_complete_message(tail)
-                        } else {
-                            parser::find_next_complete_storage_message(tail)
-                        }
-                    });
+                    // A valid raw frame can contain storage magic in its
+                    // payload, so only salvage a later candidate once the
+                    // stream is definitively over.
+                    let recovery_pos = reached_eof
+                        .then(|| {
+                            remaining
+                                .get(1..)
+                                .and_then(parser::find_next_complete_message)
+                        })
+                        .flatten();
                     if let Some(pos) = recovery_pos {
                         let skipped = 1 + pos;
                         consumed += skipped;
@@ -512,6 +510,33 @@ mod tests {
     #[test]
     fn test_stream_waits_for_outer_raw_message_with_embedded_raw_frame() {
         let embedded = build_dlt_message_without_storage_header(b"Embedded");
+        let mut outer_payload = b"Before".to_vec();
+        outer_payload.extend_from_slice(&embedded);
+        outer_payload.extend_from_slice(b"After");
+        let outer = build_dlt_message_without_storage_header(&outer_payload);
+        let split = 14 + b"Before".len() + embedded.len();
+        let reader = ScriptedReader {
+            steps: VecDeque::from([
+                Ok(outer[..split].to_vec()),
+                Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                Err(io::Error::from(io::ErrorKind::TimedOut)),
+                Ok(outer[split..].to_vec()),
+            ]),
+        };
+        let (tx, rx) = mpsc::channel();
+        let skipped_bytes = Arc::new(AtomicUsize::new(0));
+
+        stream_from_reader_with_skipped(reader, tx, Arc::clone(&skipped_bytes)).unwrap();
+
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(skipped_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].payload_raw(), outer_payload);
+    }
+
+    #[test]
+    fn test_stream_waits_for_outer_raw_message_with_embedded_storage_frame() {
+        let embedded = build_dlt_message_with_storage_header(b"Embedded");
         let mut outer_payload = b"Before".to_vec();
         outer_payload.extend_from_slice(&embedded);
         outer_payload.extend_from_slice(b"After");

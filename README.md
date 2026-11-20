@@ -94,7 +94,8 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `Shift+Left`/`Right`   | Scroll payload horizontally fast       |
 | `g` / `Home`           | Jump to first log                      |
 | `G` / `End`            | Jump to last log                       |
-| `Enter`                | Open detail view with hex dump         |
+| `Tab`                  | Focus logs, Sources, or Contexts        |
+| `Enter`                | Apply selected Source/CTX filter, or open log detail |
 | `/`                    | Search text (regex supported)          |
 | `l`                    | Filter by log level (F/E/W/I/D/V)      |
 | `a`                    | Filter by APP ID                       |
@@ -107,6 +108,8 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `E`                    | Export filtered logs to file           |
 | `q` / `Esc`            | Back to File Explorer                  |
 
+When Sources or Contexts has focus, `j`/`k` navigates the complete ranked list, including entries outside the visible pane. Source entries use their paths so files with the same basename remain distinct.
+
 ### Log Detail
 
 | Key         | Action                       |
@@ -114,13 +117,14 @@ A typical triage session: press `l` `W` `Enter` to hide everything below warning
 | `j` / `k`   | Navigate between log entries |
 | `q` / `Esc` | Back to Log Viewer           |
 
-Paging and jump keys (`Ctrl+f/b/d/u`, `g`, `G`) work in the detail view too. In any filter input, `Enter` applies and `Esc` cancels the input — an already-active filter stays as it was.
+In the detail view, `j`/`k` changes logs and PageUp/PageDown scrolls the detail text and hex rows. `g`/`G` jumps to the first/last log. In any filter input, `Enter` applies and `Esc` cancels the input — an already-active filter stays as it was.
 
 ## Notes
 
 - TCP mode (`--connect`) and file or directory paths are mutually exclusive.
 - Each input is limited to 500 MiB (524,288,000 bytes); compressed inputs are checked after decompression as a zip-bomb guard.
 - Parsed messages remain in memory for filtering and navigation; binary-heavy or compressed logs can require several times their on-disk size in RAM.
+- Storage timestamps are treated as absolute time. Daemon-relative timestamps display as ticks and retain per-source input order across resets; deltas across clock domains or detected restarts show `N/A`.
 - `.zip` archives: only the first file entry is read; directory entries are skipped. Zip one `.dlt` per archive, or use `.gz`.
 - `E` exports the filtered view to `dlt_export_<timestamp>.txt` in the current working directory.
 - Payload text is sanitized before rendering, so logs containing escape sequences can't mess with your terminal.

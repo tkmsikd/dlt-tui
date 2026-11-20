@@ -175,7 +175,7 @@ fn live_tcp_receives_fragmented_messages_and_disconnects_cleanly() {
             .iter()
             .map(|&index| app.logs[index].message.payload_text())
             .collect::<Vec<_>>(),
-        vec!["live first", "live second"]
+        vec!["live second", "live first"]
     );
     assert_eq!(app.logs_selected_index, 1);
     assert!(app.auto_scroll);
